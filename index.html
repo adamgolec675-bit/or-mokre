@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>histARy - Podgląd AR</title>
+  <script type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/3.5.0/model-viewer.min.js"></script>
+  <style>
+    body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #F4F1EA; }
+    model-viewer { width: 100%; height: 100%; }
+    .ar-button {
+      position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%);
+      background-color: #704214; color: white; padding: 14px 24px;
+      border-radius: 30px; font-weight: bold; border: none; font-size: 16px;
+      cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+    }
+  </style>
+</head>
+<body>
+  <model-viewer 
+    src="./pa%C5%82ac%20mokre%20w%20kolorze.glb" 
+    alt="Pałac w Mokrem" 
+    ar 
+    ar-modes="webxr scene-viewer quick-look" 
+    camera-controls 
+    auto-rotate 
+    shadow-intensity="1">
+    <button slot="ar-button" class="ar-button">
+      🏰 Wyświetl w Twojej przestrzeni
+    </button>
+  </model-viewer>
+</body>
+</html>
