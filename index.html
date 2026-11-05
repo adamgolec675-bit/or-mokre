@@ -93,7 +93,7 @@ loader.load(
   function (gltf) {
     loadedModel = gltf.scene;
     // Domyślne skalowanie - jeśli po załadowaniu nie widać modelu, zmień na (1, 1, 1)
-    loadedModel.scale.set(0.1, 0.1, 0.1); 
+    loadedModel.scale.set(1, 1, 1); 
     
     // Komunikat informujący, że model jest w pamięci i czeka na tapnięcie
     const overlay = document.getElementById('android-ui');
