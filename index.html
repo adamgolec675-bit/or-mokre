@@ -85,11 +85,27 @@
           document.body.appendChild(ARButton.createButton(renderer, { requiredFeatures: ['hit-test'] }));
 
           // UWAGA: Zmień nazwę na swój plik .glb dla Androida
-          const loader = new GLTFLoader();
-          loader.load('palac.glb', function (gltf) {
-            loadedModel = gltf.scene;
-            loadedModel.scale.set(0.1, 0.1, 0.1); 
-          });
+         const loader = new GLTFLoader();
+
+// UWAGA: Nazwa w cudzysłowie musi zgadzać się co do wielkości liter z plikiem na GitHubie!
+loader.load(
+  'palac.glb',
+  function (gltf) {
+    loadedModel = gltf.scene;
+    // Domyślne skalowanie - jeśli po załadowaniu nie widać modelu, zmień na (1, 1, 1)
+    loadedModel.scale.set(0.1, 0.1, 0.1); 
+    
+    // Komunikat informujący, że model jest w pamięci i czeka na tapnięcie
+    const overlay = document.getElementById('android-ui');
+    if (overlay) overlay.innerHTML = "✅ Model wczytany!<br>Zeskanuj podłogę i kliknij ekran.";
+  },
+  undefined,
+  function (error) {
+    console.error('Błąd ładowania GLB:', error);
+    const overlay = document.getElementById('android-ui');
+    if (overlay) overlay.innerHTML = "❌ Błąd: Nie znaleziono pliku palac.glb na serwerze!";
+  }
+);
 
           function onSelect() {
             if (reticle.visible && loadedModel) {
