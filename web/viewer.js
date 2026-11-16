@@ -10,6 +10,12 @@
 //   • pozostałe → interaktywny podgląd 3D (obrót i przybliżanie palcem).
 // Podgląd 3D jest wyświetlany zawsze, gdy dostępny jest plik .glb.
 //
+// Wykrywanie WebXR: navigator.xr.isSessionSupported('immersive-ar') z limitem czasu,
+// ponowne sprawdzenie po zdarzeniu „devicechange” i po powrocie na kartę. Przycisk
+// „Uruchom AR” pojawia się od razu po potwierdzeniu wsparcia (aktywny po wczytaniu modelu).
+// Gdy WebXR jest niedostępny na Androidzie poza Chrome (np. WebView w aplikacji),
+// pod komunikatem pojawia się przycisk „Otwórz w Chrome” (intent:// → com.android.chrome).
+//
 // Celownik i stawianie modelu w AR (stan reticleActive):
 //   • start sesji → celownik aktywny; stuknięcie stawia model i chowa celownik,
 //   • model postawiony → pierwsze stuknięcie tylko „budzi” celownik,
@@ -41,11 +47,14 @@ const TEXT = {
     modelError: '❌ Nie udało się wczytać modelu 3D.',
     noWebGL: 'Twoja przeglądarka nie obsługuje grafiki 3D (WebGL).',
     previewHint: 'Obracaj model palcem, przybliżaj dwoma palcami',
-    startAndroid: '🤖 Otwórz w AR (Android)',
+    startAndroid: 'Uruchom AR',
     openIOS: '📍 Otwórz w AR (iPhone / iOS)',
+    openChrome: 'Otwórz w Chrome',
     readyAndroid: 'Stuknij brązowy przycisk, aby uruchomić aparat i umieścić model w przestrzeni.',
     readyIOS: 'Stuknij niebieski przycisk, aby wyświetlić model w AR Quick Look.',
     noAr: 'To urządzenie lub przeglądarka nie obsługuje AR. Obejrzyj model w podglądzie 3D powyżej. Na Androidzie otwórz stronę w Chrome.',
+    noArOtherBrowser: 'Ta przeglądarka (np. wbudowana w aplikację) nie obsługuje AR z kamerą (WebXR). Obejrzyj model w podglądzie 3D powyżej albo otwórz stronę w Chrome.',
+    noArChrome: 'Chrome na tym urządzeniu nie udostępnia AR (WebXR). Obejrzyj model w podglądzie 3D powyżej i sprawdź, czy Chrome jest aktualny.',
     arStartError: 'Nie udało się uruchomić AR. Upewnij się, że zainstalowane są Usługi Google Play dla AR i że przeglądarka ma dostęp do aparatu.',
     modeTabletop: 'Makieta',
     modeReal: 'Skala 1:1',
@@ -74,11 +83,14 @@ const TEXT = {
     modelError: '❌ The 3D model could not be loaded.',
     noWebGL: 'Your browser does not support 3D graphics (WebGL).',
     previewHint: 'Drag to rotate, pinch to zoom',
-    startAndroid: '🤖 Open in AR (Android)',
+    startAndroid: 'Start AR',
     openIOS: '📍 Open in AR (iPhone / iOS)',
+    openChrome: 'Open in Chrome',
     readyAndroid: 'Tap the brown button to start the camera and place the model in space.',
     readyIOS: 'Tap the blue button to view the model in AR Quick Look.',
     noAr: 'This device or browser does not support AR. Explore the model in the 3D preview above. On Android, open the page in Chrome.',
+    noArOtherBrowser: 'This browser (e.g. one built into an app) does not support camera AR (WebXR). Explore the model in the 3D preview above or open the page in Chrome.',
+    noArChrome: 'Chrome on this device does not provide AR (WebXR). Explore the model in the 3D preview above and make sure Chrome is up to date.',
     arStartError: 'AR could not be started. Make sure Google Play Services for AR is installed and the browser has camera access.',
     modeTabletop: 'Tabletop',
     modeReal: 'Scale 1:1',
@@ -134,6 +146,28 @@ const setStatus = (text) => { ui.status.textContent = text; };
 
 const SITE_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+// Android: odróżnienie Google Chrome od WebView i innych przeglądarek (User-Agent Client Hints + UA).
+const UA = navigator.userAgent || '';
+const isAndroid = /Android/i.test(UA);
+const uaBrands = navigator.userAgentData && Array.isArray(navigator.userAgentData.brands)
+  ? navigator.userAgentData.brands.map((b) => b.brand)
+  : [];
+const OTHER_ANDROID_BROWSERS = /SamsungBrowser|EdgA|OPR\/|OPX|YaBrowser|UCBrowser|Firefox|DuckDuckGo|MiuiBrowser|HuaweiBrowser|HeyTapBrowser|VivoBrowser|Brave|FBAN|FBAV|Instagram|Line\/|KAKAOTALK|Snapchat|LinkedInApp/i;
+const isAndroidWebView = isAndroid && (/\bwv\b/.test(UA) || uaBrands.includes('Android WebView'));
+const isGoogleChrome = isAndroid && !isAndroidWebView && (uaBrands.length > 0
+  ? uaBrands.includes('Google Chrome')
+  : /Chrome\/\d+/.test(UA) && !OTHER_ANDROID_BROWSERS.test(UA));
+
+const CHROME_PACKAGE = 'com.android.chrome';
+const CHROME_PLAY_STORE_URL = 'https://play.google.com/store/apps/details?id=com.android.chrome';
+const XR_DETECT_TIMEOUT_MS = 4000;
+
+/** Adres intent:// otwierający bieżącą stronę w Chrome; bez Chrome → strona Chrome w Sklepie Play. */
+function chromeIntentUrl(href) {
+  const rest = String(href).split('#')[0].replace(/^https?:\/\//i, '');
+  return `intent://${rest}#Intent;scheme=https;package=${CHROME_PACKAGE};S.browser_fallback_url=${encodeURIComponent(CHROME_PLAY_STORE_URL)};end`;
+}
 
 /** Ścieżka z pliku JSON → pełny adres; dozwolone https:// i ścieżki względne bez "..". */
 function resolveAsset(path) {
@@ -278,6 +312,9 @@ const state = {
   reticleActive: true,  // czy celownik ma być pokazywany i aktualizowany z hit-testu
   floorY: null,         // wysokość podłoża z ostatniego postawienia
   tabletopPose: null,   // { position, yaw } makiety – przywracane po powrocie z trybu 1:1
+  xr: { supported: false, reason: 'pending' },  // wynik wykrywania WebXR
+  canQuickLook: false,
+  modelStatus: 'none',  // 'none' | 'loading' | 'ready' | 'error' | 'nowebgl'
 };
 
 let renderer = null;
@@ -315,41 +352,134 @@ async function main() {
     tabletopWidth: Number(site.ar.tabletopWidthMeters) > 0 ? Number(site.ar.tabletopWidthMeters) : 0.5,
   };
 
-  const [xrSupported, quickLook] = await Promise.all([detectWebXR(), Promise.resolve(detectQuickLook())]);
+  state.canQuickLook = detectQuickLook() && Boolean(state.ar.usdz);
+  if (state.canQuickLook) setupQuickLook();
 
-  const canWebXR = xrSupported && Boolean(state.ar.glb);
-  const canQuickLook = quickLook && Boolean(state.ar.usdz);
-  if (canWebXR || canQuickLook) setupModeSwitch(canQuickLook && !canWebXR);
-  if (canQuickLook) setupQuickLook();
+  // Wykrywanie WebXR biegnie równolegle z pobieraniem modelu; każdy wynik odświeża interfejs.
+  const xrReady = detectWebXR(applyXrResult).then(applyXrResult);
+  watchWebXR();
+  refreshArEntry();
 
   if (state.ar.glb) {
     if (!initRenderer()) {
+      state.modelStatus = 'nowebgl';
       setStatus(T('noWebGL'));
     } else {
       await loadModel();
     }
   }
 
-  if (canWebXR && state.model) {
-    ui.startAr.textContent = T('startAndroid');
-    ui.startAr.hidden = false;
-    ui.startAr.disabled = false;
-    ui.startAr.addEventListener('click', startAR);
-    setStatus(T('readyAndroid'));
-  } else if (canQuickLook) {
-    setStatus(T('readyIOS'));
-  } else if (state.model) {
-    setStatus(T('noAr'));
+  await xrReady;
+  refreshArEntry();
+}
+
+/**
+ * Sprawdza navigator.xr.isSessionSupported('immersive-ar') z limitem czasu.
+ * Wynik: { supported, reason } – reason ∈ supported | unsupported | no-api | insecure | timeout | error.
+ * Gdy odpowiedź przyjdzie po limicie czasu, trafi do onLateResult.
+ */
+async function detectWebXR(onLateResult) {
+  if (!('xr' in navigator) || !navigator.xr || typeof navigator.xr.isSessionSupported !== 'function') {
+    return { supported: false, reason: 'no-api' };
+  }
+  if (!window.isSecureContext) return { supported: false, reason: 'insecure' };
+  let timer = null;
+  try {
+    const query = Promise.resolve(navigator.xr.isSessionSupported('immersive-ar'));
+    const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve('timeout'), XR_DETECT_TIMEOUT_MS); });
+    const answer = await Promise.race([query, timeout]);
+    if (answer === 'timeout') {
+      if (onLateResult) {
+        query.then((late) => { if (late === true) onLateResult({ supported: true, reason: 'supported' }); }, () => {});
+      }
+      return { supported: false, reason: 'timeout' };
+    }
+    return answer === true ? { supported: true, reason: 'supported' } : { supported: false, reason: 'unsupported' };
+  } catch (e) {
+    return { supported: false, reason: 'error' };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
-async function detectWebXR() {
-  if (!('xr' in navigator) || !window.isSecureContext) return false;
-  try {
-    return await navigator.xr.isSessionSupported('immersive-ar');
-  } catch (e) {
-    return false;
+/** Wynik wykrywania nigdy nie cofa potwierdzonego wsparcia (brak wyścigu odpowiedzi). */
+function applyXrResult(result) {
+  if (!result || (state.xr.supported && !result.supported)) return;
+  state.xr = result;
+  refreshArEntry();
+}
+
+/** Ponowne sprawdzenie po zmianie urządzeń XR i po powrocie na kartę (np. po instalacji ARCore). */
+let xrRecheckRunning = false;
+function watchWebXR() {
+  const recheck = async () => {
+    if (xrRecheckRunning || state.xr.supported) return;
+    xrRecheckRunning = true;
+    try {
+      applyXrResult(await detectWebXR(applyXrResult));
+    } finally {
+      xrRecheckRunning = false;
+    }
+  };
+  if (navigator.xr && typeof navigator.xr.addEventListener === 'function') {
+    navigator.xr.addEventListener('devicechange', recheck);
   }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') recheck();
+  });
+}
+
+function noArMessage() {
+  if (isAndroid && !isGoogleChrome) return T('noArOtherBrowser');
+  if (isGoogleChrome) return T('noArChrome');
+  return T('noAr');
+}
+
+let chromeLink = null;
+
+/** Przycisk „Otwórz w Chrome” tuż pod komunikatem (tworzony dynamicznie – bez zmian w index.html). */
+function setChromeFallback(show) {
+  if (!show) {
+    if (chromeLink) chromeLink.hidden = true;
+    return;
+  }
+  if (!chromeLink) {
+    chromeLink = document.createElement('a');
+    chromeLink.id = 'open-chrome';
+    chromeLink.className = 'btn btn-android';
+    chromeLink.style.marginTop = '12px';
+    chromeLink.rel = 'noopener';
+    ui.status.insertAdjacentElement('afterend', chromeLink);
+  }
+  chromeLink.textContent = T('openChrome');
+  chromeLink.href = chromeIntentUrl(location.href);
+  chromeLink.hidden = false;
+}
+
+let modeSwitchReady = false;
+
+/** Jedno miejsce, które ustawia przyciski AR i komunikat – można je wywoływać wielokrotnie. */
+function refreshArEntry() {
+  if (!state.ar) return;
+  const modelUsable = state.modelStatus !== 'error' && state.modelStatus !== 'nowebgl';
+  const canWebXR = state.xr.supported && Boolean(state.ar.glb) && modelUsable;
+  const xrKnown = state.xr.reason !== 'pending';
+
+  if ((canWebXR || state.canQuickLook) && !modeSwitchReady) {
+    modeSwitchReady = true;
+    setupModeSwitch(state.canQuickLook && !canWebXR);
+  }
+
+  ui.startAr.textContent = T('startAndroid');
+  ui.startAr.hidden = !canWebXR;
+  ui.startAr.disabled = !(canWebXR && state.model);
+
+  setChromeFallback(isAndroid && !isGoogleChrome && xrKnown && !state.xr.supported && Boolean(state.ar.glb));
+
+  if (state.modelStatus === 'loading' || !modelUsable) return;
+  if (canWebXR && state.model) setStatus(T('readyAndroid'));
+  else if (state.canQuickLook) setStatus(T('readyIOS'));
+  else if (state.model && xrKnown) setStatus(noArMessage());
 }
 
 function detectQuickLook() {
@@ -537,6 +667,7 @@ function resizePreview() {
 async function loadModel() {
   const loader = new GLTFLoader();
   loader.setMeshoptDecoder(MeshoptDecoder);
+  state.modelStatus = 'loading';
   ui.progress.hidden = false;
   setStatus(T('loadingModelUnknown'));
   const started = performance.now();
@@ -556,10 +687,13 @@ async function loadModel() {
     state.model.bytes = bytes;
   } catch (e) {
     console.error(e);
+    state.modelStatus = 'error';
     ui.progress.hidden = true;
     setStatus(T('modelError'));
+    refreshArEntry();
     return;
   }
+  state.modelStatus = 'ready';
   ui.progress.hidden = true;
 
   // Podgląd: model znormalizowany do szerokości 1 m
@@ -583,6 +717,7 @@ async function loadModel() {
     ui.debugPage.hidden = false;
     ui.debugPage.textContent = debugText();
   }
+  refreshArEntry();
 }
 
 // ───────── Skala modelu w AR ─────────
@@ -685,7 +820,7 @@ function repositionForMode(previousMode) {
 // ───────── Sesja WebXR ─────────
 
 async function startAR() {
-  if (!state.model) return;
+  if (!state.model || !state.xr.supported || renderer.xr.isPresenting) return;
   try {
     // requestSession musi zostać wywołane bezpośrednio w obsłudze kliknięcia.
     const session = await navigator.xr.requestSession('immersive-ar', {
@@ -798,6 +933,7 @@ ui.overlay.addEventListener('pointerdown', (e) => {
 // Przytrzymanie nie otwiera menu kontekstowego i nie zaznacza tekstu.
 ui.overlay.addEventListener('contextmenu', (e) => e.preventDefault());
 
+ui.startAr.addEventListener('click', startAR);
 ui.arClose.addEventListener('click', () => renderer?.xr.getSession()?.end());
 ui.arClose.setAttribute('aria-label', T('close'));
 
@@ -955,6 +1091,7 @@ function debugText() {
     m ? `Wczytanie: ${m.loadMs} ms, ${(m.bytes / 1048576).toFixed(2)} MB` : '',
     m ? `Rozmiar modelu: ${m.size.x.toFixed(2)} × ${m.size.y.toFixed(2)} × ${m.size.z.toFixed(2)}` : '',
     `Skala AR: ${currentArScale().toFixed(4)} (${state.mode})`,
+    `WebXR: ${state.xr.reason}; Android: ${isAndroid ? 'tak' : 'nie'}; WebView: ${isAndroidWebView ? 'tak' : 'nie'}; Chrome: ${isGoogleChrome ? 'tak' : 'nie'}`,
     `Celownik: ${state.reticleActive ? 'aktywny' : 'ukryty'}${ar.reticle && ar.reticle.visible ? ', widoczny' : ''}`,
     `Szacowanie światła: ${ar.estimating ? 'tak' : 'nie'}`,
   ].filter(Boolean).join('\n');
