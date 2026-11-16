@@ -5,11 +5,20 @@
 // Ścieżka renderowania wybierana jest na podstawie wykrytych możliwości urządzenia:
 //   • Android + Chrome z ARCore → WebXR "immersive-ar": hit-test, DOM Overlay,
 //     szacowanie oświetlenia, cień kontaktowy, jedna instancja modelu (przesuwanie,
-//     obrót ciągły przy przytrzymaniu przycisku, skalowanie), tryby „Makieta” i „Skala 1:1”
-//     (w trybie 1:1 budowla stawiana jest 5 m przed użytkownikiem, frontem do niego),
+//     obrót, skalowanie), tryby „Makieta” i „Skala 1:1”,
 //   • iOS → Apple AR Quick Look (.usdz),
 //   • pozostałe → interaktywny podgląd 3D (obrót i przybliżanie palcem).
 // Podgląd 3D jest wyświetlany zawsze, gdy dostępny jest plik .glb.
+//
+// Celownik i stawianie modelu w AR (stan reticleActive):
+//   • start sesji → celownik aktywny; stuknięcie stawia model i chowa celownik,
+//   • model postawiony → pierwsze stuknięcie tylko „budzi” celownik,
+//     drugie przenosi model w nowe miejsce i znów chowa celownik,
+//   • „Makieta”: model staje dokładnie w miejscu celownika,
+//   • „Skala 1:1”: budowla staje w kierunku patrzenia, najbliższa ściana ok. 5 m
+//     przed użytkownikiem, fasada (+Z) zwrócona do użytkownika; powrót do „Makiety”
+//     przywraca makietę w poprzednie miejsce,
+//   • przytrzymanie przycisku obrotu obraca model płynnie (60°/s, niezależnie od FPS).
 
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
@@ -17,7 +26,6 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { XREstimatedLight } from 'three/addons/webxr/XREstimatedLight.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
-import { exteriorPlacement } from './placement.js';
 
 // ───────────────────────── Teksty ─────────────────────────
 
@@ -46,10 +54,8 @@ const TEXT = {
     modeRealDescIOS: 'W AR Quick Look skala 1:1 blokuje zmianę rozmiaru modelu.',
     modeTabletopDescIOS: 'W AR Quick Look rozmiar modelu zmienisz, szczypiąc ekran dwoma palcami.',
     arScan: 'Powoli poruszaj telefonem, aby wykryć podłoże.',
-    arTap: 'Stuknij ekran, aby postawić model w miejscu celownika.',
-    arTapReal: 'Skala 1:1: stuknij ekran – budowla stanie ok. 5 m przed Tobą, frontem w Twoją stronę.',
-    arPlaced: 'Stuknij, aby przesunąć model. Przytrzymaj ↺ lub ↻, aby obracać; skaluj przyciskami − + lub dwoma palcami.',
-    arPlacedReal: 'Skala 1:1. Stoisz ok. 5 m przed frontem budowli. Stuknij, aby ustawić ją ponownie w kierunku, w którym patrzysz.',
+    arTapPlace: 'Stuknij ekran, aby postawić obiekt',
+    arTapWake: 'Stuknij ekran, aby włączyć celownik i przenieść obiekt',
     close: 'Zamknij AR',
     rotateLeft: 'Obróć w lewo',
     rotateRight: 'Obróć w prawo',
@@ -81,10 +87,8 @@ const TEXT = {
     modeRealDescIOS: 'In AR Quick Look, scale 1:1 locks the model size.',
     modeTabletopDescIOS: 'In AR Quick Look, pinch with two fingers to change the model size.',
     arScan: 'Move your phone slowly to detect the ground.',
-    arTap: 'Tap the screen to place the model at the reticle.',
-    arTapReal: 'Scale 1:1: tap the screen – the building will stand about 5 m in front of you, facing you.',
-    arPlaced: 'Tap to move the model. Hold ↺ or ↻ to rotate; scale with the − + buttons or two fingers.',
-    arPlacedReal: 'Scale 1:1. You are standing about 5 m in front of the building. Tap to place it again in the direction you are looking.',
+    arTapPlace: 'Tap screen to place model',
+    arTapWake: 'Tap screen to show target and move model',
     close: 'Close AR',
     rotateLeft: 'Rotate left',
     rotateRight: 'Rotate right',
@@ -141,6 +145,61 @@ function resolveAsset(path) {
 }
 
 const pick = (text) => (text && (text[lang] || text.pl)) || '';
+
+// ───────────────────────── Stałe interakcji AR ─────────────────────────
+
+const REAL_SCALE_CLEARANCE_M = 5;          // odstęp użytkownika od najbliższej ściany w trybie 1:1
+const ROTATE_SPEED_RAD_S = Math.PI / 3;    // 60°/s przy przytrzymaniu przycisku obrotu
+const TAP_ROTATE_STEP_RAD = Math.PI / 12;  // 15° przy krótkim stuknięciu przycisku obrotu
+const TAP_MAX_MS = 200;                    // krótsze przytrzymanie = stuknięcie
+const GESTURE_COOLDOWN_MS = 350;           // po geście dwoma palcami ignorujemy „select”
+const HUD_TAP_COOLDOWN_MS = 400;           // po dotknięciu przycisku HUD ignorujemy „select”
+const HUD_SELECTOR = 'button, .ar-toolbar';
+
+// ───────────────────────── Czysta logika (bez DOM i WebXR) ─────────────────────────
+
+/**
+ * Maszyna stanów stuknięcia w AR.
+ * 'wake'  – model postawiony, celownik ukryty → pierwsze stuknięcie tylko pokazuje celownik,
+ * 'place' – celownik aktywny i widoczny → postaw / przenieś model,
+ * 'none'  – celownik aktywny, ale podłoże nie zostało jeszcze wykryte.
+ */
+function selectAction(reticleActive, reticleVisible) {
+  if (!reticleActive) return 'wake';
+  return reticleVisible ? 'place' : 'none';
+}
+
+/** Kąt obrotu wokół osi Y, przy którym przód modelu (+Z) patrzy z punktu (x, z) na użytkownika. */
+function yawFacing(fromX, fromZ, viewerX, viewerZ) {
+  return Math.atan2(viewerX - fromX, viewerZ - fromZ);
+}
+
+/**
+ * Tryb 1:1: rzut kierunku patrzenia na płaszczyznę XZ, środek podstawy odsunięty o
+ * max(szerokość, głębokość) / 2 + 5 m, fasada zwrócona do użytkownika.
+ * Gdy użytkownik patrzy pionowo w dół, kierunek wyznacza punkt celownika.
+ */
+function computeRealPlacement(viewer, gaze, target, floorY, halfExtent) {
+  let dx = gaze.x;
+  let dz = gaze.z;
+  let len = Math.hypot(dx, dz);
+  if (len < 1e-3 && target) {
+    dx = target.x - viewer.x;
+    dz = target.z - viewer.z;
+    len = Math.hypot(dx, dz);
+  }
+  if (len < 1e-3) {
+    dx = 0;
+    dz = -1;
+    len = 1;
+  }
+  dx /= len;
+  dz /= len;
+  const distance = halfExtent + REAL_SCALE_CLEARANCE_M;
+  const x = viewer.x + dx * distance;
+  const z = viewer.z + dz * distance;
+  return { x, y: floorY, z, yaw: yawFacing(x, z, viewer.x, viewer.z) };
+}
 
 // ───────────────────────── Dane zabytku ─────────────────────────
 
@@ -211,20 +270,15 @@ function fitShadow(light, target, worldSize) {
 const state = {
   site: null,
   ar: null,
-  model: null,         // wynik prepareModel()
-  mode: 'tabletop',    // 'tabletop' | 'real'
-  userScale: 1,        // dodatkowa skala makiety ustawiana gestem
+  model: null,          // wynik prepareModel()
+  mode: 'tabletop',     // 'tabletop' | 'real'
+  userScale: 1,         // dodatkowa skala makiety ustawiana gestem
   yaw: 0,
   placed: false,
-  activeRotationDir: 0,   // -1, 0 lub 1 – obrót ciągły podczas przytrzymania przycisku
-  floorY: null,           // wysokość ostatnio wykrytego podłoża (z hit-testu)
-  tabletopPose: null,     // ostatnie położenie makiety – przywracane po wyjściu z trybu 1:1
+  reticleActive: true,  // czy celownik ma być pokazywany i aktualizowany z hit-testu
+  floorY: null,         // wysokość podłoża z ostatniego postawienia
+  tabletopPose: null,   // { position, yaw } makiety – przywracane po powrocie z trybu 1:1
 };
-
-/** Prędkość obrotu przy przytrzymaniu przycisku (rad/s) – niezależna od liczby klatek. */
-const ROTATION_SPEED = THREE.MathUtils.degToRad(60);
-/** Odległość makiety od kamery, gdy podłoże nie zostało jeszcze wykryte (m). */
-const TABLETOP_FALLBACK_DISTANCE_M = 1.5;
 
 let renderer = null;
 
@@ -326,15 +380,12 @@ function setupModeSwitch(forQuickLook) {
 function setMode(mode) {
   const previous = state.mode;
   state.mode = mode === 'real' ? 'real' : 'tabletop';
-  if (previous !== state.mode && renderer?.xr.isPresenting && state.placed) {
-    if (state.mode === 'real') enterRealScale();
-    else leaveRealScale();
-  }
   ui.modeSwitch.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.mode === state.mode)));
   ui.arMode.textContent = state.mode === 'real' ? T('modeReal') : T('modeTabletop');
   ui.arToolbar.querySelectorAll('[data-action="smaller"],[data-action="bigger"]').forEach((b) => { b.disabled = state.mode === 'real'; });
   if (state.ar && state.ar.usdz) updateQuickLookHref();
   applyArScale();
+  if (previous !== state.mode) repositionForMode(previous);
   updateArHint();
 }
 
@@ -366,9 +417,9 @@ function updateQuickLookHref() {
 
 const preview = { scene: null, camera: null, controls: null, light: null };
 const ar = {
-  scene: null, camera: null, modelPivot: null, scaleGroup: null, light: null, hemi: null,
+  scene: null, camera: null, anchor: null, scaleGroup: null, light: null, hemi: null,
   reticle: null, hitTestSource: null, xrLight: null, estimating: false, envMap: null,
-  gestureActive: false, lastGestureEnd: 0,
+  gestureActive: false, lastGestureEnd: -Infinity, lastHudTouch: -Infinity, lastFrameTime: 0,
 };
 
 function initRenderer() {
@@ -424,13 +475,11 @@ function initRenderer() {
   ar.light.shadow.mapSize.set(2048, 2048);
   ar.scene.add(ar.hemi, ar.light, ar.light.target);
 
-  // modelPivot: punkt odniesienia modelu (środek podstawy) – pozycja na podłożu i obrót wokół osi Y.
-  // scaleGroup: skala makiety lub skala 1:1.
-  ar.modelPivot = new THREE.Group();
-  ar.modelPivot.visible = false;
+  ar.anchor = new THREE.Group();
+  ar.anchor.visible = false;
   ar.scaleGroup = new THREE.Group();
-  ar.modelPivot.add(ar.scaleGroup);
-  ar.scene.add(ar.modelPivot);
+  ar.anchor.add(ar.scaleGroup);
+  ar.scene.add(ar.anchor);
 
   ar.reticle = new THREE.Mesh(
     new THREE.RingGeometry(0.15, 0.2, 40).rotateX(-Math.PI / 2),
@@ -552,7 +601,85 @@ function applyArScale() {
   if (!state.model || !ar.scaleGroup) return;
   const scale = currentArScale();
   ar.scaleGroup.scale.setScalar(scale);
-  fitShadow(ar.light, ar.modelPivot, state.model.footprint * scale);
+  fitShadow(ar.light, ar.anchor, state.model.footprint * scale);
+}
+
+// ───────── Położenie użytkownika i stawianie modelu ─────────
+
+const _viewer = new THREE.Vector3();
+const _gaze = new THREE.Vector3();
+const _hit = new THREE.Vector3();
+
+/** Pozycja kamery XR i kierunek patrzenia (z ostatniej klatki). */
+function readViewer() {
+  const cam = renderer.xr.getCamera();
+  _viewer.setFromMatrixPosition(cam.matrixWorld);
+  _gaze.set(0, 0, -1).transformDirection(cam.matrixWorld);
+  return { viewer: _viewer, gaze: _gaze };
+}
+
+/** Połowa największego wymiaru podstawy budowli w skali 1:1 (metry). */
+function realHalfExtent() {
+  if (!state.model) return 0;
+  const scale = state.ar.realWidth ? state.ar.realWidth / state.model.footprint : 1;
+  return (Math.max(state.model.size.x, state.model.size.z) * scale) / 2;
+}
+
+function setAnchorPose(x, y, z, yaw) {
+  ar.anchor.position.set(x, y, z);
+  state.yaw = yaw;
+  ar.anchor.rotation.y = yaw;
+}
+
+/** Postawienie (lub przeniesienie) modelu w miejscu celownika – reguły trybu „Makieta” / „Skala 1:1”. */
+function placeAtReticle() {
+  _hit.setFromMatrixPosition(ar.reticle.matrix);
+  const { viewer, gaze } = readViewer();
+  state.floorY = _hit.y;
+
+  if (state.mode === 'real') {
+    const p = computeRealPlacement(viewer, gaze, _hit, _hit.y, realHalfExtent());
+    setAnchorPose(p.x, p.y, p.z, p.yaw);
+  } else {
+    // Makieta staje dokładnie na celowniku. Przy pierwszym postawieniu front modelu (+Z)
+    // zwracamy w stronę użytkownika, przy przenoszeniu zachowujemy dotychczasowy obrót.
+    const yaw = state.placed ? state.yaw : yawFacing(_hit.x, _hit.z, viewer.x, viewer.z);
+    setAnchorPose(_hit.x, _hit.y, _hit.z, yaw);
+    state.tabletopPose = { position: _hit.clone(), yaw };
+  }
+
+  if (!state.placed) {
+    state.placed = true;
+    ar.anchor.visible = true;
+    ui.arToolbar.hidden = false;
+  }
+  applyArScale();
+}
+
+/** Zmiana trybu po postawieniu: 1:1 przed użytkownikiem, powrót do makiety w poprzednie miejsce. */
+function repositionForMode(previousMode) {
+  if (!renderer || !renderer.xr.isPresenting || !state.placed) return;
+  const floorY = state.floorY ?? ar.anchor.position.y;
+  const { viewer, gaze } = readViewer();
+
+  if (state.mode === 'real') {
+    if (previousMode === 'tabletop') {
+      state.tabletopPose = { position: ar.anchor.position.clone(), yaw: state.yaw };
+    }
+    const p = computeRealPlacement(viewer, gaze, null, floorY, realHalfExtent());
+    setAnchorPose(p.x, p.y, p.z, p.yaw);
+  } else if (state.tabletopPose) {
+    const { position, yaw } = state.tabletopPose;
+    setAnchorPose(position.x, position.y, position.z, yaw);
+  } else {
+    // Model postawiono od razu w skali 1:1 – makieta ok. 1,2 m przed użytkownikiem.
+    const len = Math.hypot(gaze.x, gaze.z) || 1;
+    const x = viewer.x + (gaze.x / len) * 1.2;
+    const z = viewer.z + (gaze.z / len) * 1.2;
+    setAnchorPose(x, floorY, z, yawFacing(x, z, viewer.x, viewer.z));
+    state.tabletopPose = { position: ar.anchor.position.clone(), yaw: state.yaw };
+  }
+  applyArScale();
 }
 
 // ───────── Sesja WebXR ─────────
@@ -577,7 +704,13 @@ async function startAR() {
 
 function onSessionStart(session) {
   state.placed = false;
-  ar.modelPivot.visible = false;
+  state.reticleActive = true;   // od razu widać celownik do pierwszego postawienia
+  state.floorY = null;
+  state.tabletopPose = null;
+  stopHoldRotate();
+  ar.lastFrameTime = 0;
+  ar.reticle.visible = false;
+  ar.anchor.visible = false;
   ui.overlay.hidden = false;
   ui.arToolbar.hidden = true;
   ui.arMode.textContent = state.mode === 'real' ? T('modeReal') : T('modeTabletop');
@@ -597,141 +730,54 @@ function onSessionEnd() {
     ar.hitTestSource.cancel?.();
     ar.hitTestSource = null;
   }
+  stopHoldRotate();
   ar.reticle.visible = false;
   ui.overlay.hidden = true;
   state.placed = false;
-  state.floorY = null;
-  state.tabletopPose = null;
-  stopContinuousRotation();
+  state.reticleActive = true;
   requestAnimationFrame(resizePreview);
   setStatus(T('readyAndroid'));
 }
 
 function updateArHint() {
   if (!renderer || !renderer.xr.isPresenting) return;
-  if (state.placed) {
-    ui.arHint.textContent = state.mode === 'real' ? T('arPlacedReal') : T('arPlaced');
-  } else if (!ar.reticle.visible) {
-    ui.arHint.textContent = T('arScan');
-  } else {
-    ui.arHint.textContent = state.mode === 'real' ? T('arTapReal') : T('arTap');
-  }
-}
-
-// ───────── Położenie modelu ─────────
-
-const tmpQuat = new THREE.Quaternion();
-
-/** Pozycja kamery i kierunek patrzenia rzutowany na płaszczyznę poziomą XZ. */
-function cameraPoseXZ() {
-  const cam = renderer.xr.getCamera();
-  const position = new THREE.Vector3().setFromMatrixPosition(cam.matrixWorld);
-  tmpQuat.setFromRotationMatrix(cam.matrixWorld);
-  const forwardXZ = new THREE.Vector3(0, 0, -1).applyQuaternion(tmpQuat);
-  forwardXZ.y = 0;
-  // Telefon skierowany pionowo w dół lub w górę – brak kierunku w poziomie.
-  if (forwardXZ.lengthSq() < 1e-6) forwardXZ.set(0, 0, -1);
-  forwardXZ.normalize();
-  return { position, forwardXZ };
-}
-
-/** Wysokość podłoża: bieżący hit-test, ostatnio wykryte podłoże albo ok. 1,5 m pod kamerą. */
-function currentFloorY() {
-  if (ar.reticle.visible) return new THREE.Vector3().setFromMatrixPosition(ar.reticle.matrix).y;
-  if (state.floorY !== null) return state.floorY;
-  if (state.placed) return ar.modelPivot.position.y;
-  return cameraPoseXZ().position.y - 1.5;
-}
-
-/** Obraca front modelu (+Z) w stronę punktu, w którym stoi użytkownik. */
-function faceTowards(cameraPos) {
-  const p = ar.modelPivot.position;
-  state.yaw = Math.atan2(cameraPos.x - p.x, cameraPos.z - p.z);
-  ar.modelPivot.rotation.y = state.yaw;
+  let text;
+  if (!state.reticleActive) text = T('arTapWake');          // model postawiony, celownik ukryty
+  else if (!ar.reticle.visible) text = T('arScan');         // celownik aktywny, brak podłoża
+  else text = T('arTapPlace');                              // celownik aktywny i widoczny
+  if (ui.arHint.textContent !== text) ui.arHint.textContent = text;
 }
 
 /**
- * Tryb 1:1 – bezpieczne ustawienie na zewnątrz budowli.
- * Środek podstawy trafia na prostą patrzenia w odległości (połowa największego poziomego
- * wymiaru + 5 m), na wysokości wykrytego podłoża, a fasada frontowa zwraca się do użytkownika.
- * Dzięki temu użytkownik zawsze stoi ok. 5 m przed fasadą, a nie wewnątrz geometrii.
+ * Stuknięcie ekranu (zdarzenie „select” WebXR):
+ *  A) celownik aktywny i widoczny → postaw / przenieś model, schowaj celownik,
+ *  B) model postawiony, celownik ukryty → pierwsze stuknięcie tylko „budzi” celownik,
+ *     drugie (już przy aktywnym celowniku) przenosi model jak w przypadku A.
  */
-function placeOutsideAtRealScale(floorY) {
-  const { position: cameraPos, forwardXZ } = cameraPoseXZ();
-  const { position, yaw } = exteriorPlacement({
-    cameraPos,
-    forward: forwardXZ,
-    size: state.model.size,
-    scale: currentArScale(),
-    floorY,
-  });
-  ar.modelPivot.position.set(position.x, position.y, position.z);
-  state.yaw = yaw;
-  ar.modelPivot.rotation.y = yaw;
-}
-
-function rememberTabletopPose() {
-  state.tabletopPose = { position: ar.modelPivot.position.clone(), yaw: state.yaw };
-}
-
-/** Przejście Makieta → 1:1 w trakcie sesji: zapamiętanie makiety i ustawienie budowli na zewnątrz. */
-function enterRealScale() {
-  rememberTabletopPose();
-  applyArScale();
-  placeOutsideAtRealScale(currentFloorY());
-}
-
-/** Przejście 1:1 → Makieta: powrót makiety w poprzednie miejsce (lub przed użytkownika). */
-function leaveRealScale() {
-  if (state.tabletopPose) {
-    ar.modelPivot.position.copy(state.tabletopPose.position);
-    state.yaw = state.tabletopPose.yaw;
-    ar.modelPivot.rotation.y = state.yaw;
-  } else {
-    const { position: cameraPos, forwardXZ } = cameraPoseXZ();
-    if (ar.reticle.visible) {
-      ar.modelPivot.position.setFromMatrixPosition(ar.reticle.matrix);
-    } else {
-      ar.modelPivot.position.copy(cameraPos).addScaledVector(forwardXZ, TABLETOP_FALLBACK_DISTANCE_M);
-      ar.modelPivot.position.y = currentFloorY();
-    }
-    faceTowards(cameraPos);
-  }
-  applyArScale();
-}
-
-/** Stuknięcie ekranu (zdarzenie select WebXR): postawienie lub przesunięcie jedynej instancji modelu. */
 function onSelect() {
-  if (ar.gestureActive || performance.now() - ar.lastGestureEnd < 350) return;
-  const firstPlacement = !state.placed;
+  const now = performance.now();
+  if (!state.model) return;
+  if (ar.gestureActive || now - ar.lastGestureEnd < GESTURE_COOLDOWN_MS) return;
+  if (now - ar.lastHudTouch < HUD_TAP_COOLDOWN_MS) return;
 
-  if (state.mode === 'real') {
-    // W trybie 1:1 potrzebna jest tylko wysokość podłoża – położenie wynika z kierunku patrzenia.
-    if (!ar.reticle.visible && state.floorY === null) return;
-    applyArScale();
-    placeOutsideAtRealScale(currentFloorY());
-  } else {
-    if (!ar.reticle.visible) return;
-    ar.modelPivot.position.setFromMatrixPosition(ar.reticle.matrix);
-    // Przy pierwszym postawieniu front modelu (+Z) zwracamy w stronę użytkownika.
-    if (firstPlacement) faceTowards(cameraPoseXZ().position);
-    applyArScale();
-    rememberTabletopPose();
-  }
-
-  if (firstPlacement) {
-    state.placed = true;
-    ar.modelPivot.visible = true;
-    ui.arToolbar.hidden = false;
+  switch (selectAction(state.reticleActive, ar.reticle.visible)) {
+    case 'wake':
+      state.reticleActive = true;
+      break;
+    case 'place':
+      placeAtReticle();
+      state.reticleActive = false;
+      ar.reticle.visible = false;
+      break;
+    default:
+      break;
   }
   updateArHint();
 }
 
-/** Obrót o stały krok – obsługa klawiatury i czytników ekranu. */
 function rotateBy(rad) {
   state.yaw += rad;
-  ar.modelPivot.rotation.y = state.yaw;
-  if (state.mode !== 'real') rememberTabletopPose();
+  ar.anchor.rotation.y = state.yaw;
 }
 
 function scaleBy(factor) {
@@ -740,62 +786,70 @@ function scaleBy(factor) {
   applyArScale();
 }
 
-// Przyciski nakładki – beforexrselect zapobiega jednoczesnemu przesunięciu modelu.
+// ───────── Przyciski HUD ─────────
+
+// Dotknięcia przycisków i paska narzędzi nie mogą stawiać ani budzić celownika.
 ui.overlay.addEventListener('beforexrselect', (e) => {
-  if (e.target.closest('button')) e.preventDefault();
+  if (e.target instanceof Element && e.target.closest(HUD_SELECTOR)) e.preventDefault();
 });
+ui.overlay.addEventListener('pointerdown', (e) => {
+  if (e.target instanceof Element && e.target.closest(HUD_SELECTOR)) ar.lastHudTouch = performance.now();
+}, { capture: true });
+// Przytrzymanie nie otwiera menu kontekstowego i nie zaznacza tekstu.
+ui.overlay.addEventListener('contextmenu', (e) => e.preventDefault());
+
 ui.arClose.addEventListener('click', () => renderer?.xr.getSession()?.end());
 ui.arClose.setAttribute('aria-label', T('close'));
+
 ui.arToolbar.addEventListener('click', (e) => {
   const btn = e.target.closest('button[data-action]');
   if (!btn) return;
   switch (btn.dataset.action) {
+    case 'rotate-left':
+    case 'rotate-right':
+      // Obrót wskaźnikiem obsługuje przytrzymanie; tu tylko klawiatura (detail === 0).
+      if (e.detail === 0) rotateBy(btn.dataset.action === 'rotate-left' ? TAP_ROTATE_STEP_RAD : -TAP_ROTATE_STEP_RAD);
+      break;
     case 'smaller': scaleBy(1 / 1.15); break;
     case 'bigger': scaleBy(1.15); break;
     case 'mode': setMode(state.mode === 'real' ? 'tabletop' : 'real'); break;
     default: break;
   }
 });
-ui.arToolbar.querySelector('[data-rotate="1"]').setAttribute('aria-label', T('rotateLeft'));
-ui.arToolbar.querySelector('[data-rotate="-1"]').setAttribute('aria-label', T('rotateRight'));
-
-// Obrót ciągły: przytrzymanie ↺ / ↻ ustawia kierunek, a pętla renderowania obraca model
-// z prędkością ROTATION_SPEED niezależnie od liczby klatek na sekundę.
-function stopContinuousRotation() {
-  state.activeRotationDir = 0;
-  ui.arToolbar.querySelectorAll('[data-rotate]').forEach((b) => b.classList.remove('is-held'));
-  if (state.placed && state.mode !== 'real') rememberTabletopPose();
-}
-
-ui.arToolbar.querySelectorAll('[data-rotate]').forEach((btn) => {
-  const dir = Number(btn.dataset.rotate);
-  btn.addEventListener('pointerdown', (e) => {
-    e.preventDefault();
-    state.activeRotationDir = dir;
-    btn.classList.add('is-held');
-  });
-  const release = () => {
-    if (state.activeRotationDir === dir) stopContinuousRotation();
-    btn.classList.remove('is-held');
-  };
-  btn.addEventListener('pointerup', release);
-  btn.addEventListener('pointerleave', release);
-  btn.addEventListener('pointercancel', release);
-  // Klawiatura / czytnik ekranu (kliknięcie bez wskaźnika): obrót o 15°.
-  btn.addEventListener('click', (e) => {
-    if (e.detail === 0) rotateBy(dir * THREE.MathUtils.degToRad(15));
-  });
-});
-
-// Przytrzymanie przycisku nie może otwierać menu kontekstowego ani zaznaczać tekstu.
-ui.overlay.addEventListener('contextmenu', (e) => e.preventDefault());
-ui.overlay.addEventListener('selectstart', (e) => e.preventDefault());
-window.addEventListener('blur', stopContinuousRotation);
-document.addEventListener('visibilitychange', () => {
-  if (document.hidden) stopContinuousRotation();
-});
+ui.arToolbar.querySelector('[data-action="rotate-left"]').setAttribute('aria-label', T('rotateLeft'));
+ui.arToolbar.querySelector('[data-action="rotate-right"]').setAttribute('aria-label', T('rotateRight'));
 ui.arToolbar.querySelector('[data-action="smaller"]').setAttribute('aria-label', T('smaller'));
 ui.arToolbar.querySelector('[data-action="bigger"]').setAttribute('aria-label', T('bigger'));
+
+// Obrót przytrzymaniem: 60°/s liczone z czasu klatki; krótkie stuknięcie = krok 15°.
+const hold = { dir: 0, startedAt: 0, rotated: 0 };
+
+function startHoldRotate(dir) {
+  hold.dir = dir;
+  hold.startedAt = performance.now();
+  hold.rotated = 0;
+}
+
+function stopHoldRotate() {
+  if (!hold.dir) return;
+  const heldMs = performance.now() - hold.startedAt;
+  if (heldMs < TAP_MAX_MS && state.placed) {
+    const remaining = TAP_ROTATE_STEP_RAD - Math.abs(hold.rotated);
+    if (remaining > 0) rotateBy(hold.dir * remaining);
+  }
+  hold.dir = 0;
+  hold.rotated = 0;
+}
+
+ui.arToolbar.querySelectorAll('[data-action="rotate-left"],[data-action="rotate-right"]').forEach((btn) => {
+  const dir = btn.dataset.action === 'rotate-left' ? 1 : -1;
+  btn.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    try { btn.setPointerCapture(e.pointerId); } catch (err) { /* brak wsparcia */ }
+    startHoldRotate(dir);
+  });
+  ['pointerup', 'pointercancel', 'lostpointercapture'].forEach((type) => btn.addEventListener(type, stopHoldRotate));
+});
 
 // Gesty dwoma palcami na nakładce: szczypanie = skala (makieta), skręt = obrót.
 const pinch = { dist: 0, angle: 0, scale: 1, yaw: 0 };
@@ -819,13 +873,12 @@ ui.overlay.addEventListener('touchmove', (e) => {
     applyArScale();
   }
   state.yaw = pinch.yaw - (info.angle - pinch.angle);
-  ar.modelPivot.rotation.y = state.yaw;
+  ar.anchor.rotation.y = state.yaw;
 }, { passive: true });
 const endGesture = (e) => {
   if (ar.gestureActive && e.touches.length < 2) {
     ar.gestureActive = false;
     ar.lastGestureEnd = performance.now();
-    if (state.mode !== 'real') rememberTabletopPose();
   }
 };
 ui.overlay.addEventListener('touchend', endGesture, { passive: true });
@@ -834,13 +887,8 @@ ui.overlay.addEventListener('touchcancel', endGesture, { passive: true });
 // ───────── Pętla renderowania ─────────
 
 const fps = { frames: 0, last: performance.now(), value: 0 };
-let lastFrameTime = null;
 
 function renderFrame(time, frame) {
-  // Czas od poprzedniej klatki (s), ograniczony do 0,1 s po przerwach (np. zmiana karty).
-  const deltaTime = lastFrameTime === null ? 0 : Math.min(0.1, Math.max(0, (time - lastFrameTime) / 1000));
-  lastFrameTime = time;
-
   fps.frames += 1;
   const now = performance.now();
   if (now - fps.last >= 1000) {
@@ -855,26 +903,26 @@ function renderFrame(time, frame) {
   }
 
   if (renderer.xr.isPresenting && frame) {
+    const dt = ar.lastFrameTime ? Math.min(0.1, Math.max(0, (time - ar.lastFrameTime) / 1000)) : 0;
+    ar.lastFrameTime = time;
     const refSpace = renderer.xr.getReferenceSpace();
-    if (ar.hitTestSource) {
-      const hits = frame.getHitTestResults(ar.hitTestSource);
-      const wasVisible = ar.reticle.visible;
-      if (hits.length > 0) {
-        const pose = hits[0].getPose(refSpace);
-        ar.reticle.visible = Boolean(pose);
-        if (pose) {
-          ar.reticle.matrix.fromArray(pose.transform.matrix);
-          state.floorY = pose.transform.position.y;
-        }
-      } else {
-        ar.reticle.visible = false;
-      }
-      if (wasVisible !== ar.reticle.visible && !state.placed) updateArHint();
-    }
 
-    if (state.activeRotationDir !== 0 && state.placed) {
-      ar.modelPivot.rotation.y += state.activeRotationDir * ROTATION_SPEED * deltaTime;
-      state.yaw = ar.modelPivot.rotation.y;
+    // Celownik pokazujemy i aktualizujemy tylko, gdy jest aktywny.
+    const wasVisible = ar.reticle.visible;
+    if (state.reticleActive && ar.hitTestSource) {
+      const hits = frame.getHitTestResults(ar.hitTestSource);
+      const pose = hits.length > 0 ? hits[0].getPose(refSpace) : null;
+      ar.reticle.visible = Boolean(pose);
+      if (pose) ar.reticle.matrix.fromArray(pose.transform.matrix);
+    } else {
+      ar.reticle.visible = false;
+    }
+    if (wasVisible !== ar.reticle.visible) updateArHint();
+
+    if (hold.dir && state.placed && dt > 0) {
+      const delta = hold.dir * ROTATE_SPEED_RAD_S * dt;
+      hold.rotated += delta;
+      rotateBy(delta);
     }
 
     if (ar.estimating && state.model) {
@@ -885,11 +933,12 @@ function renderFrame(time, frame) {
       if (est.position.lengthSq() > 0) {
         ar.light.userData.direction = est.position.clone().normalize();
         if (ar.light.userData.direction.y < 0.2) ar.light.userData.direction.y = 0.2;
-        fitShadow(ar.light, ar.modelPivot, state.model.footprint * currentArScale());
+        fitShadow(ar.light, ar.anchor, state.model.footprint * currentArScale());
       }
     }
     renderer.render(ar.scene, ar.camera);
   } else {
+    ar.lastFrameTime = 0;
     preview.controls.update();
     renderer.render(preview.scene, preview.camera);
   }
@@ -906,7 +955,7 @@ function debugText() {
     m ? `Wczytanie: ${m.loadMs} ms, ${(m.bytes / 1048576).toFixed(2)} MB` : '',
     m ? `Rozmiar modelu: ${m.size.x.toFixed(2)} × ${m.size.y.toFixed(2)} × ${m.size.z.toFixed(2)}` : '',
     `Skala AR: ${currentArScale().toFixed(4)} (${state.mode})`,
-    `Obrót: ${Math.round(THREE.MathUtils.radToDeg(state.yaw) % 360)}°`,
+    `Celownik: ${state.reticleActive ? 'aktywny' : 'ukryty'}${ar.reticle && ar.reticle.visible ? ', widoczny' : ''}`,
     `Szacowanie światła: ${ar.estimating ? 'tak' : 'nie'}`,
   ].filter(Boolean).join('\n');
 }
