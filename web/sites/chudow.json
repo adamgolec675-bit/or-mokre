@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "chudow",
+  "revision": 1,
+  "location": {
+    "lat": 50.224094,
+    "lon": 18.772571
+  },
+  "title": {
+    "pl": "Zamek w Chudowie",
+    "en": "Chudów Castle"
+  },
+  "subtitle": {
+    "pl": "Chudów • Renesansowa Wieża",
+    "en": "Chudów • Renaissance Tower"
+  },
+  "description": {
+    "pl": "Zamek w Chudowie – ruiny renesansowego zamku w Chudowie z lat 30. XVI wieku, wzniesionego przez szlachcica Jana Saszowskiego z Gierałtowic (vel Gierałtowski z Gierałtowic, z Domu Saszowskich herbu Saszor) na miejscu drewnianej wieży obronnej. Obiekt murowany z kamienia i cegły, pierwotnie na planie prostokąta, z dziedzińcem centralnym z krużgankami i studnią. Założenie miało dwa trzykondygnacyjne budynki mieszkalne, przekryte wysokimi dachami dwuspadowymi oraz czworoboczną, pięciokondygnacyjną wieżę, przekrytą wysokim dachem czterospadowym, z wejściem głównym od strony południowo-zachodniej z drewnianym mostem nad fosą zamkową. Szósta kondygnacja została dodana podczas XIX-wiecznej przebudowy, dokonanej przez ówczesnego właściciela zamku – Aleksandra von Bally. W 1874 zamek spłonął. W roku 1995 powołana została Fundacja „Zamek Chudów”, której założycielem i pierwszym prezesem był Andrzej Sośnierz. Po przejęciu obiektu w roku 1999 fundacja zaczęła prowadzić prace rekonstrukcyjne i wykopaliskowe. Do 2004 roku odbudowano i zadaszono zamkową wieżę, w której obecnie mieści się muzeum zamku w Chudowie, prezentujące zabytki pozyskane podczas badań archeologicznych obiektu. Podniesiono również mury wokół dziedzińca i odnowiono bramy. Podjęte zostały także badania archiwalne, w efekcie których nakładem prowadzonego przez fundację wydawnictwa ukazały się publikacje dotyczące historii zamku. Począwszy od roku 1996 na terenie zamku organizowane są plenerowe imprezy kulturalno-oświatowe (Spotkania na Zamku w Chudowie), obejmujące inscenizacje historyczne, zloty, koncerty, projekcje filmowe, występy kabaretowe. Wizytówką i najstarszym elementem Spotkań jest sierpniowy Jarmark Średniowieczny.",
+    "en": "Chudów Castle – the ruins of a Renaissance castle in Chudów dating from the 1530s, built by the nobleman Jan Saszowski of Gierałtowice (also known as Gierałtowski of Gierałtowice, of the Saszowski family, Saszor coat of arms) on the site of a wooden defensive tower. The building was made of stone and brick, originally on a rectangular plan, with a central courtyard surrounded by arcaded galleries and a well. The complex had two three-storey residential buildings covered with tall gable roofs and a square, five-storey tower with a tall hipped roof. The main entrance was on the south-west side, across a wooden bridge over the castle moat. A sixth storey was added during a 19th-century remodelling carried out by the castle's then owner, Alexander von Bally. In 1874 the castle burned down. In 1995 the \"Zamek Chudów\" Foundation was established; its founder and first president was Andrzej Sośnierz. After taking over the site in 1999, the foundation began reconstruction work and archaeological excavations. By 2004 the castle tower had been rebuilt and roofed; today it houses the Chudów Castle museum, which displays artefacts recovered during archaeological research on the site. The walls around the courtyard were also raised and the gates restored. Archival research was undertaken as well, resulting in publications on the castle's history issued by the foundation's own publishing house. Since 1996 the castle grounds have hosted open-air cultural and educational events (Meetings at Chudów Castle), including historical re-enactments, rallies, concerts, film screenings and cabaret shows. The highlight and oldest part of the Meetings is the Medieval Fair held every August."
+  },
+  "image": {
+    "url": "https://zamkiobronne.pl/wp-content/uploads/2017/10/chudow_2023_03.jpg",
+    "credit": "zamkiobronne.pl"
+  },
+  "ar": null
+}

@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#111111">
+  <title>histARy – AR</title>
+  <link rel="icon" href="data:,">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body {
+      background-color: #111111;
+      color: #ffffff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      padding: 20px;
+      text-align: center;
+    }
+    .card {
+      background: #1c1c1e;
+      border: 1px solid #3a3a3c;
+      border-radius: 20px;
+      padding: 30px 20px;
+      max-width: 400px;
+      width: 100%;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+    }
+    h1 { font-size: 22px; margin-bottom: 8px; color: #f4f1ea; }
+    p { font-size: 14px; color: #a1a1a6; margin-bottom: 25px; line-height: 1.4; }
+    #subtitle { margin-bottom: 18px; }
+
+    .preview {
+      position: relative;
+      width: 100%;
+      height: 300px;
+      border-radius: 14px;
+      overflow: hidden;
+      margin-bottom: 18px;
+      background: radial-gradient(circle at 50% 35%, #3a3a3c 0%, #1c1c1e 75%);
+      touch-action: none;
+    }
+    .preview canvas { display: block; width: 100%; height: 100%; }
+    .preview[hidden] { display: none; }
+    .progress {
+      position: absolute; left: 20px; right: 20px; bottom: 18px; height: 6px;
+      border-radius: 3px; background: #3a3a3c; overflow: hidden;
+    }
+    .progress > div { width: 0%; height: 100%; background: #704214; transition: width .15s; }
+    .progress[hidden] { display: none; }
+    .preview-hint {
+      position: absolute; left: 0; right: 0; top: 10px;
+      font-size: 12px; color: #a1a1a6; pointer-events: none;
+    }
+
+    .btn {
+      display: block;
+      width: 100%;
+      padding: 16px;
+      border-radius: 14px;
+      font-size: 16px;
+      font-weight: bold;
+      text-decoration: none;
+      margin-bottom: 12px;
+      border: none;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .btn[hidden] { display: none; }
+    .btn:disabled { opacity: .5; cursor: default; }
+    .btn-ios { background-color: #007aff; color: #ffffff; }
+    .btn-android { background-color: #704214; color: #ffffff; }
+
+    /* AR Quick Look: kotwica rel="ar" musi zawierać wyłącznie jeden element <img>. */
+    .ql-link { display: block; margin-bottom: 12px; line-height: 0; }
+    .ql-link[hidden] { display: none; }
+    .ql-link img { width: 100%; height: auto; border-radius: 14px; }
+
+    .mode-switch {
+      display: flex; gap: 8px; margin-bottom: 14px;
+      background: #2c2c2e; padding: 4px; border-radius: 12px;
+    }
+    .mode-switch[hidden] { display: none; }
+    .mode-switch button {
+      flex: 1; padding: 10px 6px; border: none; border-radius: 9px;
+      background: transparent; color: #a1a1a6; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+    }
+    .mode-switch button[aria-pressed="true"] { background: #704214; color: #fff; }
+    .mode-desc { font-size: 12px; margin: -6px 0 16px; }
+
+    #status {
+      margin-top: 15px;
+      font-size: 13px;
+      color: #ffd60a;
+      min-height: 20px;
+      line-height: 1.4;
+    }
+    .credit { font-size: 11px; margin: 14px 0 0; color: #6e6e73; }
+
+    /* Nakładka DOM podczas sesji AR (WebXR DOM Overlay). */
+    #ar-overlay { position: fixed; inset: 0; color: #fff; text-align: center; touch-action: none; user-select: none; -webkit-user-select: none; }
+    #ar-overlay[hidden] { display: none; }
+    .ar-top {
+      position: absolute; top: max(16px, env(safe-area-inset-top)); left: 16px; right: 16px;
+      display: flex; align-items: flex-start; gap: 10px;
+    }
+    #ar-hint {
+      flex: 1; background: rgba(28,28,30,.82); border-radius: 12px; pointer-events: none;
+      padding: 10px 12px; font-size: 14px; line-height: 1.35; text-align: left;
+    }
+    /* Przyciski nakładki AR: przytrzymanie palcem nigdy nie zaznacza tekstu, nie powiększa
+       strony i nie otwiera menu kontekstowego (Chrome na Androidzie). */
+    .ar-btn, .ar-mode {
+      pointer-events: auto; border: none; cursor: pointer;
+      user-select: none; -webkit-user-select: none;
+      -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
+      touch-action: manipulation;
+    }
+    .ar-btn {
+      border-radius: 50%; width: 52px; height: 52px; flex: 0 0 52px;
+      background: rgba(28,28,30,.82); color: #fff; font-size: 22px; font-weight: bold; line-height: 1;
+      display: inline-flex; align-items: center; justify-content: center;
+      transition: transform .12s ease, background-color .12s ease;
+    }
+    .ar-btn:active, .ar-btn.is-held { transform: scale(.92); background: rgba(112,66,20,.92); }
+    .ar-btn:disabled { opacity: .35; }
+
+    /* Dolny pasek: lewa grupa (skala) – środek (tryb) – prawa grupa (obrót). */
+    .ar-toolbar {
+      position: absolute; left: 0; right: 0;
+      bottom: max(24px, env(safe-area-inset-bottom));
+      padding: 0 16px;
+      display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    }
+    .ar-toolbar[hidden] { display: none; }
+    .ar-group { display: flex; gap: 10px; }
+    .ar-mode {
+      flex: 0 1 auto; min-width: 0; height: 52px; padding: 0 16px; border-radius: 26px;
+      background: #704214; color: #fff; font: inherit; font-size: 14px; font-weight: bold;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    @media (max-width: 360px) {
+      .ar-btn { width: 46px; height: 46px; flex-basis: 46px; font-size: 20px; }
+      .ar-group { gap: 6px; }
+      .ar-mode { padding: 0 10px; font-size: 13px; }
+    }
+    #debug {
+      position: absolute; left: 16px; bottom: 90px; font: 11px/1.4 ui-monospace, monospace;
+      background: rgba(0,0,0,.6); padding: 6px 8px; border-radius: 8px; text-align: left; white-space: pre;
+    }
+    #debug[hidden] { display: none; }
+    #debug-page { font: 11px/1.4 ui-monospace, monospace; color: #8e8e93; white-space: pre; text-align: left; margin-top: 10px; }
+    #debug-page[hidden] { display: none; }
+  </style>
+</head>
+<body>
+
+  <main class="card">
+    <h1 id="title">🏛️ histARy</h1>
+    <p id="subtitle">Wczytywanie danych zabytku…</p>
+
+    <div id="preview" class="preview" hidden>
+      <div id="preview-hint" class="preview-hint"></div>
+      <div id="progress" class="progress" hidden><div></div></div>
+    </div>
+
+    <div id="mode-switch" class="mode-switch" role="group" hidden>
+      <button type="button" data-mode="tabletop" aria-pressed="true"></button>
+      <button type="button" data-mode="real" aria-pressed="false"></button>
+    </div>
+    <p id="mode-desc" class="mode-desc" hidden></p>
+
+    <!-- iOS: Apple AR Quick Look (jedyny element wewnątrz kotwicy to <img>). -->
+    <a id="ql-link" class="ql-link" rel="ar" href="#" hidden><img id="ql-img" alt=""></a>
+
+    <!-- Android: WebXR (Chrome + Usługi Google Play dla AR). -->
+    <button id="start-ar" class="btn btn-android" type="button" hidden disabled></button>
+
+    <div id="status" role="status" aria-live="polite"></div>
+    <div id="debug-page" hidden></div>
+    <p id="credit" class="credit"></p>
+  </main>
+
+  <!-- Nakładka wyświetlana nad obrazem z kamery w trakcie sesji AR. -->
+  <div id="ar-overlay" hidden>
+    <div class="ar-top">
+      <div id="ar-hint"></div>
+      <button id="ar-close" class="ar-btn" type="button">✕</button>
+    </div>
+    <div id="ar-toolbar" class="ar-toolbar" hidden>
+      <div class="ar-group" role="group">
+        <button class="ar-btn" type="button" data-action="smaller">−</button>
+        <button class="ar-btn" type="button" data-action="bigger">+</button>
+      </div>
+      <button id="ar-mode" class="ar-mode" type="button" data-action="mode"></button>
+      <div class="ar-group" role="group">
+        <button class="ar-btn" type="button" data-rotate="1">↺</button>
+        <button class="ar-btn" type="button" data-rotate="-1">↻</button>
+      </div>
+    </div>
+    <div id="debug" hidden></div>
+  </div>
+
+  <noscript><p>Ta strona wymaga włączonej obsługi JavaScriptu.</p></noscript>
+
+  <!-- Biblioteki są hostowane razem ze stroną – brak zależności od zewnętrznych CDN. -->
+  <script async src="vendor/es-module-shims.js"></script>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "./vendor/three/build/three.module.js",
+        "three/addons/": "./vendor/three/examples/jsm/"
+      }
+    }
+  </script>
+  <script type="module" src="viewer.js"></script>
+</body>
+</html>
