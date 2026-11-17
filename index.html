@@ -4,6 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="theme-color" content="#111111">
+  <!-- Wersja strony – musi zgadzać się z VIEWER_VERSION w viewer.js i z ?v= w tagu skryptu na dole. -->
+  <meta name="histary-viewer" content="2">
   <title>histARy – AR</title>
   <link rel="icon" href="data:,">
   <style>
@@ -129,7 +131,8 @@
     .ar-btn:active, .ar-btn.is-held { transform: scale(.92); background: rgba(112,66,20,.92); }
     .ar-btn:disabled { opacity: .35; }
 
-    /* Dolny pasek: lewa grupa (skala) – środek (tryb) – prawa grupa (obrót). */
+    /* Dolny pasek (przyciski tworzy viewer.js): lewa grupa – obrót (↺ ↻),
+       środek – tryb „Makieta” / „Skala 1:1”, prawa grupa – skala (− +). */
     .ar-toolbar {
       position: absolute; left: 0; right: 0;
       bottom: max(24px, env(safe-area-inset-bottom));
@@ -191,17 +194,8 @@
       <div id="ar-hint"></div>
       <button id="ar-close" class="ar-btn" type="button">✕</button>
     </div>
-    <div id="ar-toolbar" class="ar-toolbar" hidden>
-      <div class="ar-group" role="group">
-        <button class="ar-btn" type="button" data-action="smaller">−</button>
-        <button class="ar-btn" type="button" data-action="bigger">+</button>
-      </div>
-      <button id="ar-mode" class="ar-mode" type="button" data-action="mode"></button>
-      <div class="ar-group" role="group">
-        <button class="ar-btn" type="button" data-rotate="1">↺</button>
-        <button class="ar-btn" type="button" data-rotate="-1">↻</button>
-      </div>
-    </div>
+    <!-- Dolny pasek AR – przyciski (↺ ↻ | tryb | − +) tworzy viewer.js. -->
+    <div id="ar-toolbar" class="ar-toolbar" hidden></div>
     <div id="debug" hidden></div>
   </div>
 
@@ -217,6 +211,7 @@
       }
     }
   </script>
-  <script type="module" src="viewer.js"></script>
+  <!-- Jedyny skrypt aplikacji. ?v=2 wymusza pobranie nowej wersji zamiast kopii z pamięci podręcznej. -->
+  <script type="module" src="./viewer.js?v=2"></script>
 </body>
 </html>
