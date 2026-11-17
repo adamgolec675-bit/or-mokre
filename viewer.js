@@ -1,6 +1,15 @@
-// histARy – przeglądarka WebAR.
+// histARy – przeglądarka WebAR (wersja 2).
 //
 // Adres: index.html?id=<id>&lang=pl|en[&debug=1]
+//
+// Wersjonowanie: index.html ładuje ten plik jako „./viewer.js?v=2” i ma znacznik
+// <meta name="histary-viewer" content="2">. Przy każdej zmianie tego pliku podnieś numer
+// w obu miejscach oraz w VIEWER_VERSION – przeglądarki pobiorą wtedy nowy plik zamiast
+// kopii z pamięci podręcznej. Z parametrem &debug=1 panel pokazuje obie wersje.
+//
+// Dolny pasek AR budowany jest w tym pliku (nie w index.html), więc układ nie zależy od
+// wersji strony: lewa grupa – obrót (↺ ↻), środek – „Makieta” / „Skala 1:1”,
+// prawa grupa – skala (− +).
 //
 // Ścieżka renderowania wybierana jest na podstawie wykrytych możliwości urządzenia:
 //   • Android + Chrome z ARCore → WebXR "immersive-ar": hit-test, DOM Overlay,
@@ -70,6 +79,8 @@ const TEXT = {
     rotateRight: 'Obróć w prawo',
     smaller: 'Pomniejsz',
     bigger: 'Powiększ',
+    rotateGroup: 'Obrót modelu',
+    scaleGroup: 'Rozmiar modelu',
     photo: 'Fot. {credit}',
   },
   en: {
@@ -106,11 +117,20 @@ const TEXT = {
     rotateRight: 'Rotate right',
     smaller: 'Smaller',
     bigger: 'Bigger',
+    rotateGroup: 'Model rotation',
+    scaleGroup: 'Model size',
     photo: 'Photo: {credit}',
   },
 };
 
 // ───────────────────────── Parametry i elementy strony ─────────────────────────
+
+const VIEWER_VERSION = '2';
+const PAGE_VERSION = document.querySelector('meta[name="histary-viewer"]')?.getAttribute('content') || '?';
+document.documentElement.dataset.viewer = VIEWER_VERSION;
+if (PAGE_VERSION !== VIEWER_VERSION) {
+  console.warn(`histARy: index.html (v${PAGE_VERSION}) i viewer.js (v${VIEWER_VERSION}) pochodzą z różnych wersji – wgraj oba pliki i wyczyść pamięć podręczną przeglądarki.`);
+}
 
 const params = new URLSearchParams(location.search);
 const lang = params.get('lang') === 'en' ? 'en' : 'pl';
@@ -137,10 +157,65 @@ const ui = {
   overlay: $('ar-overlay'),
   arHint: $('ar-hint'),
   arClose: $('ar-close'),
-  arToolbar: $('ar-toolbar'),
-  arMode: $('ar-mode'),
+  arToolbar: null,      // ustawiane przez buildArToolbar()
+  arMode: null,         // ustawiane przez buildArToolbar()
   debug: $('debug'),
 };
+
+/**
+ * Dolny pasek AR budowany w kodzie – jedno źródło układu niezależne od wersji index.html.
+ * Lewa grupa: obrót (↺ ↻), środek: tryb „Makieta” / „Skala 1:1”, prawa grupa: skala (− +).
+ * Dotychczasowa zawartość #ar-toolbar (np. ze starszej strony) jest zastępowana.
+ */
+function buildArToolbar() {
+  let bar = $('ar-toolbar');
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'ar-toolbar';
+    bar.className = 'ar-toolbar';
+    bar.hidden = true;
+    ui.overlay.insertBefore(bar, ui.debug && ui.debug.parentNode === ui.overlay ? ui.debug : null);
+  }
+  const button = (action, label, aria) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'ar-btn';
+    b.dataset.action = action;
+    b.textContent = label;
+    b.setAttribute('aria-label', aria);
+    return b;
+  };
+  const group = (aria, ...buttons) => {
+    const g = document.createElement('div');
+    g.className = 'ar-group';
+    g.setAttribute('role', 'group');
+    g.setAttribute('aria-label', aria);
+    g.append(...buttons);
+    return g;
+  };
+  const hud = {
+    rotateLeft: button('rotate-left', '↺', T('rotateLeft')),
+    rotateRight: button('rotate-right', '↻', T('rotateRight')),
+    smaller: button('smaller', '−', T('smaller')),
+    bigger: button('bigger', '+', T('bigger')),
+    mode: document.createElement('button'),
+  };
+  hud.mode.type = 'button';
+  hud.mode.id = 'ar-mode';
+  hud.mode.className = 'ar-mode';
+  hud.mode.dataset.action = 'mode';
+  hud.mode.textContent = T('modeTabletop');
+  bar.replaceChildren(
+    group(T('rotateGroup'), hud.rotateLeft, hud.rotateRight),
+    hud.mode,
+    group(T('scaleGroup'), hud.smaller, hud.bigger),
+  );
+  ui.arToolbar = bar;
+  ui.arMode = hud.mode;
+  return hud;
+}
+
+const hud = buildArToolbar();
 
 const setStatus = (text) => { ui.status.textContent = text; };
 
@@ -512,7 +587,8 @@ function setMode(mode) {
   state.mode = mode === 'real' ? 'real' : 'tabletop';
   ui.modeSwitch.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.mode === state.mode)));
   ui.arMode.textContent = state.mode === 'real' ? T('modeReal') : T('modeTabletop');
-  ui.arToolbar.querySelectorAll('[data-action="smaller"],[data-action="bigger"]').forEach((b) => { b.disabled = state.mode === 'real'; });
+  hud.smaller.disabled = state.mode === 'real';
+  hud.bigger.disabled = state.mode === 'real';
   if (state.ar && state.ar.usdz) updateQuickLookHref();
   applyArScale();
   if (previous !== state.mode) repositionForMode(previous);
@@ -952,18 +1028,17 @@ ui.arToolbar.addEventListener('click', (e) => {
     default: break;
   }
 });
-ui.arToolbar.querySelector('[data-action="rotate-left"]').setAttribute('aria-label', T('rotateLeft'));
-ui.arToolbar.querySelector('[data-action="rotate-right"]').setAttribute('aria-label', T('rotateRight'));
-ui.arToolbar.querySelector('[data-action="smaller"]').setAttribute('aria-label', T('smaller'));
-ui.arToolbar.querySelector('[data-action="bigger"]').setAttribute('aria-label', T('bigger'));
 
 // Obrót przytrzymaniem: 60°/s liczone z czasu klatki; krótkie stuknięcie = krok 15°.
-const hold = { dir: 0, startedAt: 0, rotated: 0 };
+// ↺ (lewo) = przeciwnie do ruchu wskazówek zegara patrząc z góry (+Y), ↻ (prawo) = zgodnie.
+const hold = { dir: 0, startedAt: 0, rotated: 0, button: null };
 
-function startHoldRotate(dir) {
+function startHoldRotate(dir, button) {
   hold.dir = dir;
   hold.startedAt = performance.now();
   hold.rotated = 0;
+  hold.button = button || null;
+  if (hold.button) hold.button.classList.add('is-held');
 }
 
 function stopHoldRotate() {
@@ -973,16 +1048,17 @@ function stopHoldRotate() {
     const remaining = TAP_ROTATE_STEP_RAD - Math.abs(hold.rotated);
     if (remaining > 0) rotateBy(hold.dir * remaining);
   }
+  if (hold.button) hold.button.classList.remove('is-held');
   hold.dir = 0;
   hold.rotated = 0;
+  hold.button = null;
 }
 
-ui.arToolbar.querySelectorAll('[data-action="rotate-left"],[data-action="rotate-right"]').forEach((btn) => {
-  const dir = btn.dataset.action === 'rotate-left' ? 1 : -1;
+[[hud.rotateLeft, 1], [hud.rotateRight, -1]].forEach(([btn, dir]) => {
   btn.addEventListener('pointerdown', (e) => {
     e.preventDefault();
     try { btn.setPointerCapture(e.pointerId); } catch (err) { /* brak wsparcia */ }
-    startHoldRotate(dir);
+    startHoldRotate(dir, btn);
   });
   ['pointerup', 'pointercancel', 'lostpointercapture'].forEach((type) => btn.addEventListener(type, stopHoldRotate));
 });
@@ -1084,6 +1160,7 @@ function debugText() {
   const info = renderer.info.render;
   const m = state.model;
   return [
+    `Wersja: viewer.js v${VIEWER_VERSION}, index.html v${PAGE_VERSION}`,
     `FPS: ${fps.value}`,
     `Wywołania rysowania: ${info.calls}`,
     `Trójkąty (kadr): ${info.triangles}`,
