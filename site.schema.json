@@ -51,9 +51,36 @@
         "realWidthMeters": { "type": "number", "exclusiveMinimum": 0, "description": "Rzeczywista szerokość budowli w metrach (tryb 1:1)." },
         "tabletopWidthMeters": { "type": "number", "exclusiveMinimum": 0, "description": "Szerokość makiety na stole w metrach." }
       }
+    },
+    "hotspots": {
+      "type": "array",
+      "maxItems": 32,
+      "description": "Punkty wiedzy wyświetlane na modelu w AR (Android, WebXR). Wymagają modelu .glb w polu ar.glb. Kolejność tablicy = numeracja pinezek.",
+      "items": { "$ref": "#/$defs/hotspot" }
     }
   },
   "$defs": {
+    "hotspot": {
+      "type": "object",
+      "required": ["id", "position", "title"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+          "description": "Identyfikator punktu, niepowtarzalny w obrębie zabytku."
+        },
+        "position": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": { "type": "number" },
+          "description": "[x, y, z] w układzie współrzędnych pliku ar.glb, przed wyśrodkowaniem i skalowaniem (jednostki modelu, oś Y w górę). Wartości odczytasz w przeglądarce AR z parametrem &debug=1, stukając model."
+        },
+        "title": { "$ref": "#/$defs/localizedText" },
+        "description": { "$ref": "#/$defs/localizedText" }
+      }
+    },
     "localizedText": {
       "type": "object",
       "required": ["pl"],
