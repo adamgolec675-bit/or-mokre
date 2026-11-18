@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-11-12",
+  "updatedAt": "2026-11-18",
   "sites": [
-    { "id": "mokre", "revision": 1 },
+    { "id": "mokre", "revision": 2 },
     { "id": "chudow", "revision": 1 }
   ]
 }
