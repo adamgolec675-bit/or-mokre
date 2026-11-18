@@ -1,20 +1,21 @@
-// histARy – przeglądarka WebAR (wersja 2).
+// histARy – przeglądarka WebAR (wersja 3).
 //
 // Adres: index.html?id=<id>&lang=pl|en[&debug=1]
 //
-// Wersjonowanie: index.html ładuje ten plik jako „./viewer.js?v=2” i ma znacznik
-// <meta name="histary-viewer" content="2">. Przy każdej zmianie tego pliku podnieś numer
+// Wersjonowanie: index.html ładuje ten plik jako „./viewer.js?v=3” i ma znacznik
+// <meta name="histary-viewer" content="3">. Przy każdej zmianie tego pliku podnieś numer
 // w obu miejscach oraz w VIEWER_VERSION – przeglądarki pobiorą wtedy nowy plik zamiast
 // kopii z pamięci podręcznej. Z parametrem &debug=1 panel pokazuje obie wersje.
 //
 // Dolny pasek AR budowany jest w tym pliku (nie w index.html), więc układ nie zależy od
 // wersji strony: lewa grupa – obrót (↺ ↻), środek – „Makieta” / „Skala 1:1”,
-// prawa grupa – skala (− +).
+// prawa grupa – skala (− +). Tak samo budowane są pinezki punktów wiedzy, karta wiedzy,
+// linia odniesienia i panel współrzędnych trybu debug (style są w index.html).
 //
 // Ścieżka renderowania wybierana jest na podstawie wykrytych możliwości urządzenia:
 //   • Android + Chrome z ARCore → WebXR "immersive-ar": hit-test, DOM Overlay,
 //     szacowanie oświetlenia, cień kontaktowy, jedna instancja modelu (przesuwanie,
-//     obrót, skalowanie), tryby „Makieta” i „Skala 1:1”,
+//     obrót, skalowanie), tryby „Makieta” i „Skala 1:1”, punkty wiedzy,
 //   • iOS → Apple AR Quick Look (.usdz),
 //   • pozostałe → interaktywny podgląd 3D (obrót i przybliżanie palcem).
 // Podgląd 3D jest wyświetlany zawsze, gdy dostępny jest plik .glb.
@@ -31,9 +32,25 @@
 //     drugie przenosi model w nowe miejsce i znów chowa celownik,
 //   • „Makieta”: model staje dokładnie w miejscu celownika,
 //   • „Skala 1:1”: budowla staje w kierunku patrzenia, najbliższa ściana ok. 5 m
-//     przed użytkownikiem, fasada (+Z) zwrócona do użytkownika; powrót do „Makiety”
+//     przed użytkownikiem, fasada zwrócona do użytkownika; powrót do „Makiety”
 //     przywraca makietę w poprzednie miejsce,
 //   • przytrzymanie przycisku obrotu obraca model płynnie (60°/s, niezależnie od FPS).
+//
+// Punkty wiedzy (od wersji 3):
+//   • opcjonalna tablica „hotspots” w pliku zabytku: id, position [x, y, z] w układzie
+//     współrzędnych pliku .glb (przed wyśrodkowaniem i skalowaniem), title i description (pl/en),
+//   • każdy punkt to Object3D dołączony do korzenia modelu, więc podąża za postawieniem,
+//     obrotem, skalą i przełączaniem „Makieta” ↔ „Skala 1:1”,
+//   • co klatkę pozycja punktu jest rzutowana kamerą XR na ekran i przesuwa pinezkę
+//     w nakładce DOM; pinezki są ukryte przed postawieniem modelu i gdy punkt jest za kamerą,
+//     a punkty leżące po drugiej stronie budowli są przygaszone,
+//   • stuknięcie pinezki otwiera / zamyka kartę wiedzy – bez budzenia celownika i bez
+//     przesuwania modelu (pinezki to przyciski: „beforexrselect” + blokada HUD),
+//   • karta stoi w pasie między górnym komunikatem a dolnym paskiem, po przeciwnej stronie
+//     niż pinezka; linia SVG łączy kartę z bieżącym położeniem pinezki,
+//   • &debug=1: stuknięcie modelu (w AR i w podglądzie 3D) pokazuje współrzędne trafionego
+//     punktu w układzie pliku .glb z przyciskiem „Kopiuj”; pinezki mają wtedy podpisy z id,
+//     a w podglądzie 3D też są widoczne – do strojenia pozycji w pliku JSON.
 
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
@@ -82,6 +99,14 @@ const TEXT = {
     rotateGroup: 'Obrót modelu',
     scaleGroup: 'Rozmiar modelu',
     photo: 'Fot. {credit}',
+    hotspotsGroup: 'Punkty wiedzy',
+    hotspotPin: 'Punkt wiedzy {n}: {title}',
+    hotspotClose: 'Zamknij opis',
+    debugPickHint: 'Debug: stuknij model, aby odczytać współrzędne punktu w układzie pliku GLB.',
+    debugPickMiss: 'Debug: nie trafiono w model.',
+    debugCopy: 'Kopiuj',
+    debugCopied: 'Skopiowano ✓',
+    debugCopyFailed: 'Błąd – zob. konsola',
   },
   en: {
     loadingSite: 'Loading site data…',
@@ -120,12 +145,20 @@ const TEXT = {
     rotateGroup: 'Model rotation',
     scaleGroup: 'Model size',
     photo: 'Photo: {credit}',
+    hotspotsGroup: 'Knowledge points',
+    hotspotPin: 'Knowledge point {n}: {title}',
+    hotspotClose: 'Close description',
+    debugPickHint: 'Debug: tap the model to read point coordinates in GLB model space.',
+    debugPickMiss: 'Debug: the model was not hit.',
+    debugCopy: 'Copy',
+    debugCopied: 'Copied ✓',
+    debugCopyFailed: 'Failed – see console',
   },
 };
 
 // ───────────────────────── Parametry i elementy strony ─────────────────────────
 
-const VIEWER_VERSION = '2';
+const VIEWER_VERSION = '3';
 const PAGE_VERSION = document.querySelector('meta[name="histary-viewer"]')?.getAttribute('content') || '?';
 document.documentElement.dataset.viewer = VIEWER_VERSION;
 if (PAGE_VERSION !== VIEWER_VERSION) {
@@ -263,7 +296,25 @@ const TAP_ROTATE_STEP_RAD = Math.PI / 12;  // 15° przy krótkim stuknięciu prz
 const TAP_MAX_MS = 200;                    // krótsze przytrzymanie = stuknięcie
 const GESTURE_COOLDOWN_MS = 350;           // po geście dwoma palcami ignorujemy „select”
 const HUD_TAP_COOLDOWN_MS = 400;           // po dotknięciu przycisku HUD ignorujemy „select”
-const HUD_SELECTOR = 'button, .ar-toolbar';
+// Elementy nakładki, których dotknięcie nigdy nie stawia ani nie budzi celownika
+// (pinezki punktów wiedzy są przyciskami, więc też się tu łapią).
+const HUD_SELECTOR = 'button, .ar-toolbar, .hs-card, .hs-pick';
+
+// ───────────────────────── Stałe punktów wiedzy ─────────────────────────
+
+const MAX_HOTSPOTS = 32;                   // górny limit punktów w jednym pliku zabytku
+const PIN_TAP_MAX_MOVE_PX = 14;            // większy ruch palca na pinezce = nie stuknięcie
+const PIN_EDGE_MARGIN_PX = 24;             // pinezka dalej poza ekranem jest ukrywana
+const FAR_SIDE_DOT = -0.15;                // próg „punkt po drugiej stronie budowli” (cos kąta)
+const FAR_SIDE_MIN_OFFSET = 0.1;           // ułamek szerokości modelu – bliżej osi nie przygaszamy
+const CARD_MARGIN_PX = 10;                 // odstęp karty od górnego komunikatu i dolnego paska
+const CARD_FLIP_LOW = 0.42;                // pinezka w górnych 42% pasa → karta na dole
+const CARD_FLIP_HIGH = 0.58;               // pinezka w dolnych 42% pasa → karta na górze
+const LEADER_INSET_PX = 18;                // linia nie zaczyna się w zaokrąglonym rogu karty
+const PICK_DECIMALS = 3;                   // dokładność współrzędnych w trybie debug
+const PREVIEW_TAP_MAX_MOVE_PX = 6;         // stuknięcie w podglądzie 3D (a nie obrót)
+const PREVIEW_TAP_MAX_MS = 400;
+const SVG_NS = 'http://www.w3.org/2000/svg';
 
 // ───────────────────────── Czysta logika (bez DOM i WebXR) ─────────────────────────
 
@@ -278,9 +329,9 @@ function selectAction(reticleActive, reticleVisible) {
   return reticleVisible ? 'place' : 'none';
 }
 
-/** Kąt obrotu wokół osi Y, przy którym przód modelu (+Z) patrzy z punktu (x, z) na użytkownika. */
+/** Kąt obrotu wokół osi Y, przy którym front modelu (+X w GLB obrócone na +Z) patrzy z punktu (x, z) na użytkownika. */
 function yawFacing(fromX, fromZ, viewerX, viewerZ) {
-  return Math.atan2(viewerX - fromX, viewerZ - fromZ);
+  return Math.atan2(viewerX - fromX, viewerZ - fromZ) - Math.PI / 2;
 }
 
 /**
@@ -310,6 +361,105 @@ function computeRealPlacement(viewer, gaze, target, floorY, halfExtent) {
   return { x, y: floorY, z, yaw: yawFacing(x, z, viewer.x, viewer.z) };
 }
 
+/**
+ * Walidacja tablicy „hotspots” z pliku zabytku. Zwraca tylko poprawne punkty:
+ * id zgodne z wzorcem identyfikatora i niepowtarzalne, position = trzy liczby skończone,
+ * title.pl niepusty. Niepoprawne wpisy są pomijane (reszta działa dalej).
+ */
+function parseHotspots(list) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const item of list) {
+    if (out.length >= MAX_HOTSPOTS) break;
+    const id = item && typeof item.id === 'string' ? item.id.trim() : '';
+    const pos = item && item.position;
+    const valid = SITE_ID_RE.test(id) && !seen.has(id)
+      && Array.isArray(pos) && pos.length === 3
+      && pos.every((n) => typeof n === 'number' && Number.isFinite(n))
+      && item.title && typeof item.title.pl === 'string' && item.title.pl.trim() !== '';
+    if (!valid) {
+      console.warn('histARy: pominięto niepoprawny punkt wiedzy', item);
+      continue;
+    }
+    seen.add(id);
+    out.push({
+      id,
+      position: pos.slice(),
+      title: item.title,
+      description: item.description && typeof item.description === 'object' ? item.description : null,
+    });
+  }
+  return out;
+}
+
+/**
+ * Rzut punktu z przestrzeni widoku na ekran. view – punkt w układzie kamery (−Z do przodu),
+ * projection – macierz rzutowania (Matrix4), out – obiekt {x, y} do wypełnienia.
+ * Zwraca false, gdy punkt jest za kamerą (lub bliżej niż near) – wtedy pinezki nie pokazujemy.
+ */
+function projectViewToScreen(view, projection, near, width, height, out) {
+  if (!(view.z < -near)) return false;
+  const e = projection.elements;
+  const w = e[3] * view.x + e[7] * view.y + e[11] * view.z + e[15];
+  const ndcX = (e[0] * view.x + e[4] * view.y + e[8] * view.z + e[12]) / w;
+  const ndcY = (e[1] * view.x + e[5] * view.y + e[9] * view.z + e[13]) / w;
+  out.x = (ndcX + 1) * 0.5 * width;
+  out.y = (1 - ndcY) * 0.5 * height;
+  return true;
+}
+
+/**
+ * Heurystyka „punkt po drugiej stronie budowli” (bez kosztownego raycastu co klatkę):
+ * poziomy kierunek od osi modelu do punktu porównany z kierunkiem od punktu do kamery.
+ * Punkty bliżej osi niż minOffset (np. kalenica) nigdy nie są przygaszane.
+ */
+function isFarSide(point, center, viewer, minOffset) {
+  const ox = point.x - center.x;
+  const oz = point.z - center.z;
+  const ol = Math.hypot(ox, oz);
+  if (ol < Math.max(minOffset, 1e-6)) return false;
+  const vx = viewer.x - point.x;
+  const vz = viewer.z - point.z;
+  const vl = Math.hypot(vx, vz);
+  if (vl < 1e-6) return false;
+  return (ox * vx + oz * vz) / (ol * vl) < FAR_SIDE_DOT;
+}
+
+/**
+ * Położenie karty w pasie [bandTop, bandBottom] względem pinezki – z histerezą, aby karta
+ * nie przeskakiwała, gdy pinezka krąży koło środka. 'top' = karta przy górnym komunikacie.
+ */
+function chooseCardPlacement(pinY, bandTop, bandBottom, current) {
+  const height = bandBottom - bandTop;
+  if (!(height > 0) || typeof pinY !== 'number' || !Number.isFinite(pinY)) return current || 'top';
+  const rel = (pinY - bandTop) / height;
+  if (rel < CARD_FLIP_LOW) return 'bottom';
+  if (rel > CARD_FLIP_HIGH) return 'top';
+  return current || (rel < 0.5 ? 'bottom' : 'top');
+}
+
+/**
+ * Punkt na krawędzi karty, z którego startuje linia do pinezki (px, py).
+ * null – pinezka jest pod kartą, linii nie rysujemy.
+ */
+function leaderAnchor(rect, px, py, inset = LEADER_INSET_PX) {
+  if (px >= rect.left && px <= rect.right && py >= rect.top && py <= rect.bottom) return null;
+  const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), Math.max(lo, hi));
+  if (py > rect.bottom) return { x: clamp(px, rect.left + inset, rect.right - inset), y: rect.bottom };
+  if (py < rect.top) return { x: clamp(px, rect.left + inset, rect.right - inset), y: rect.top };
+  return { x: px < rect.left ? rect.left : rect.right, y: clamp(py, rect.top + inset, rect.bottom - inset) };
+}
+
+/** Współrzędne jako tablica JSON, np. [0.464, 0.167, -0.058] (bez „-0”). */
+function formatPoint(v, decimals = PICK_DECIMALS) {
+  const f = (n) => {
+    const r = Number(Number(n).toFixed(decimals));
+    return Object.is(r, -0) ? 0 : r;
+  };
+  return `[${f(v.x)}, ${f(v.y)}, ${f(v.z)}]`;
+}
+
 // ───────────────────────── Dane zabytku ─────────────────────────
 
 async function loadSite(id) {
@@ -323,19 +473,27 @@ async function loadSite(id) {
 
 // ───────────────────────── Model 3D ─────────────────────────
 
-/** Mierzy model i ustawia jego punkt odniesienia w środku podstawy (y = 0 to podłoże). */
+/**
+ * Mierzy model i ustawia jego punkt odniesienia w środku podstawy (y = 0 to podłoże).
+ * Prostopadłościan liczony jest z wierzchołków (precise = true). Wersja przybliżona
+ * obraca prostopadłościany poszczególnych siatek i dla obróconych elementów (np. dachu)
+ * daje wymiary zawyżone nawet o połowę – a od nich zależy skala obu trybów AR.
+ * center – środek prostopadłościanu w układzie pliku .glb (przed wyśrodkowaniem).
+ */
 function prepareModel(root) {
   root.updateMatrixWorld(true);
-  const box = new THREE.Box3().setFromObject(root);
+  const box = new THREE.Box3().setFromObject(root, true);
   const size = box.getSize(new THREE.Vector3());
   const center = box.getCenter(new THREE.Vector3());
   root.position.sub(new THREE.Vector3(center.x, box.min.y, center.z));
 
   let triangles = 0;
+  const meshes = [];
   root.traverse((obj) => {
     if (obj.isMesh) {
       obj.castShadow = true;
       obj.receiveShadow = true;
+      meshes.push(obj);
       const g = obj.geometry;
       triangles += (g.index ? g.index.count : g.attributes.position.count) / 3;
     }
@@ -344,7 +502,7 @@ function prepareModel(root) {
   const pivot = new THREE.Group();
   pivot.add(root);
   const footprint = Math.max(size.x, size.z) || 1;
-  return { pivot, size, footprint, triangles: Math.round(triangles) };
+  return { pivot, root, meshes, size, center, footprint, triangles: Math.round(triangles) };
 }
 
 /** Płaszczyzna przyjmująca wyłącznie cień – „cień kontaktowy” pod budowlą. */
@@ -426,6 +584,7 @@ async function main() {
     realWidth: Number(site.ar.realWidthMeters) > 0 ? Number(site.ar.realWidthMeters) : null,
     tabletopWidth: Number(site.ar.tabletopWidthMeters) > 0 ? Number(site.ar.tabletopWidthMeters) : 0.5,
   };
+  hs.list = parseHotspots(site.hotspots);
 
   state.canQuickLook = detectQuickLook() && Boolean(state.ar.usdz);
   if (state.canQuickLook) setupQuickLook();
@@ -625,6 +784,7 @@ const preview = { scene: null, camera: null, controls: null, light: null };
 const ar = {
   scene: null, camera: null, anchor: null, scaleGroup: null, light: null, hemi: null,
   reticle: null, hitTestSource: null, xrLight: null, estimating: false, envMap: null,
+  controller: null,
   gestureActive: false, lastGestureEnd: -Infinity, lastHudTouch: -Infinity, lastFrameTime: 0,
 };
 
@@ -698,6 +858,7 @@ function initRenderer() {
   const controller = renderer.xr.getController(0);
   controller.addEventListener('select', onSelect);
   ar.scene.add(controller);
+  ar.controller = controller;
 
   // Szacowanie oświetlenia (WebXR Lighting Estimation): kierunek i barwa światła
   // z otoczenia sterują światłem rzucającym cień.
@@ -738,6 +899,8 @@ function resizePreview() {
   renderer.setSize(w, h, false);
   preview.camera.aspect = w / h;
   preview.camera.updateProjectionMatrix();
+  hs.previewSize.w = w;
+  hs.previewSize.h = h;
 }
 
 async function loadModel() {
@@ -789,6 +952,10 @@ async function loadModel() {
   ar.scaleGroup.add(state.model.pivot, makeShadowCatcher(state.model.footprint));
   applyArScale();
 
+  // Punkty wiedzy i narzędzia debug – dopiero po sklonowaniu modelu do podglądu,
+  // aby każda scena miała własne kotwice.
+  setupHotspots(previewModel);
+
   if (debug) {
     ui.debugPage.hidden = false;
     ui.debugPage.textContent = debugText();
@@ -805,7 +972,7 @@ function currentArScale() {
     // Brak realWidthMeters → zakładamy, że jednostką modelu jest metr.
     return state.ar.realWidth ? state.ar.realWidth / f : 1;
   }
-  return (state.ar.tabletopWidth / f) * state.userScale;
+  return ((state.ar.tabletopWidth * 0.5) / f) * state.userScale;
 }
 
 function applyArScale() {
@@ -852,7 +1019,7 @@ function placeAtReticle() {
     const p = computeRealPlacement(viewer, gaze, _hit, _hit.y, realHalfExtent());
     setAnchorPose(p.x, p.y, p.z, p.yaw);
   } else {
-    // Makieta staje dokładnie na celowniku. Przy pierwszym postawieniu front modelu (+Z)
+    // Makieta staje dokładnie na celowniku. Przy pierwszym postawieniu front modelu (+X obrócone na +Z)
     // zwracamy w stronę użytkownika, przy przenoszeniu zachowujemy dotychczasowy obrót.
     const yaw = state.placed ? state.yaw : yawFacing(_hit.x, _hit.z, viewer.x, viewer.z);
     setAnchorPose(_hit.x, _hit.y, _hit.z, yaw);
@@ -893,6 +1060,549 @@ function repositionForMode(previousMode) {
   applyArScale();
 }
 
+// ───────── Punkty wiedzy: kotwice 3D i pinezki DOM ─────────
+
+const hs = {
+  list: [],                    // wynik parseHotspots()
+  ar: null,                    // { anchors, center, meshes, root, marker } – scena AR
+  preview: null,               // to samo dla podglądu 3D (tylko &debug=1)
+  previewLayer: null,          // pinezki w podglądzie (tylko &debug=1)
+  activeId: null,              // otwarta karta wiedzy
+  placement: 'top',            // 'top' | 'bottom' – położenie karty w pasie
+  band: { top: 0, bottom: 0 }, // wolny pas między górnym komunikatem a dolnym paskiem
+  cardRect: null,              // { left, right, top, bottom } – położenie karty (px nakładki)
+  overlaySize: { w: 0, h: 0 },
+  previewSize: { w: 0, h: 0 },
+};
+
+/** Kotwice punktów wiedzy jako dzieci korzenia modelu (układ pliku .glb). */
+function attachHotspotAnchors(root, hotspots, center) {
+  const anchors = new Map();
+  for (const spot of hotspots) {
+    const anchor = new THREE.Object3D();
+    anchor.name = `hotspot:${spot.id}`;
+    anchor.position.fromArray(spot.position);
+    root.add(anchor);
+    anchors.set(spot.id, anchor);
+  }
+  const centerAnchor = new THREE.Object3D();
+  centerAnchor.name = 'hotspot:center';
+  centerAnchor.position.copy(center);
+  root.add(centerAnchor);
+  return { anchors, center: centerAnchor };
+}
+
+/** Znacznik trafionego punktu w trybie debug – widoczny także przez ściany. */
+function makePickMarker(footprint) {
+  const marker = new THREE.Mesh(
+    new THREE.SphereGeometry(footprint * 0.008, 16, 12),
+    new THREE.MeshBasicMaterial({ color: 0xffd60a, depthTest: false, transparent: true, opacity: 0.95, toneMapped: false })
+  );
+  marker.name = 'debug:pick';
+  marker.renderOrder = 999;
+  marker.visible = false;
+  marker.raycast = () => {};
+  return marker;
+}
+
+const _pinWorld = new THREE.Vector3();
+const _pinView = new THREE.Vector3();
+const _camWorld = new THREE.Vector3();
+const _centerWorld = new THREE.Vector3();
+const _screen = { x: 0, y: 0 };
+
+/**
+ * Warstwa pinezek: jeden element na punkt wiedzy, przesuwany transformacją (bez przeliczania
+ * układu strony). interactive = true → przyciski otwierające kartę (AR); false → same
+ * znaczniki, przez które przechodzą dotknięcia (podgląd 3D w trybie debug).
+ */
+class PinLayer {
+  constructor(interactive, onToggle) {
+    this.interactive = interactive;
+    this.onToggle = onToggle || (() => {});
+    this.root = document.createElement('div');
+    this.root.className = 'hs-layer';
+    if (interactive) {
+      this.root.setAttribute('role', 'group');
+      this.root.setAttribute('aria-label', T('hotspotsGroup'));
+    }
+    this.pins = [];
+  }
+
+  build(hotspots, anchors) {
+    this.root.replaceChildren();
+    this.pins = hotspots.map((spot, index) => {
+      const el = document.createElement(this.interactive ? 'button' : 'div');
+      el.className = 'hs-pin';
+      el.hidden = true;
+      el.dataset.hotspot = spot.id;
+      el.style.setProperty('--hs-delay', `${(index * 0.45).toFixed(2)}s`);
+      const dot = document.createElement('span');
+      dot.className = 'hs-pin-dot';
+      dot.textContent = String(index + 1);
+      dot.setAttribute('aria-hidden', 'true');
+      const label = document.createElement('span');
+      label.className = 'hs-pin-label';
+      label.textContent = spot.id;
+      label.setAttribute('aria-hidden', 'true');
+      el.append(dot, label);
+      if (this.interactive) {
+        el.type = 'button';
+        el.setAttribute('aria-label', T('hotspotPin', { n: index + 1, title: pick(spot.title) }));
+        el.setAttribute('aria-expanded', 'false');
+        this.bindTap(el, spot.id);
+      }
+      this.root.append(el);
+      return { id: spot.id, index, el, anchor: anchors.get(spot.id), x: NaN, y: NaN, visible: false, far: false };
+    });
+  }
+
+  /** Stuknięcie pinezki: przechwycenie wskaźnika, więc pinezka „jadąca” pod palcem nadal działa. */
+  bindTap(el, id) {
+    let press = null;
+    el.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      try { el.setPointerCapture(e.pointerId); } catch (err) { /* brak wsparcia */ }
+      press = { pointerId: e.pointerId, x: e.clientX, y: e.clientY };
+    });
+    el.addEventListener('pointerup', (e) => {
+      if (!press || press.pointerId !== e.pointerId) return;
+      const moved = Math.hypot(e.clientX - press.x, e.clientY - press.y);
+      press = null;
+      const now = performance.now();
+      if (moved > PIN_TAP_MAX_MOVE_PX || ar.gestureActive || now - ar.lastGestureEnd < GESTURE_COOLDOWN_MS) return;
+      this.onToggle(id);
+    });
+    el.addEventListener('pointercancel', () => { press = null; });
+    // Klawiatura (Enter / Spacja): click bez wskaźnika ma detail === 0.
+    el.addEventListener('click', (e) => { if (e.detail === 0) this.onToggle(id); });
+  }
+
+  get(id) {
+    return this.pins.find((p) => p.id === id) || null;
+  }
+
+  setActive(id) {
+    for (const p of this.pins) {
+      const on = p.id === id;
+      p.el.classList.toggle('is-active', on);
+      if (this.interactive) p.el.setAttribute('aria-expanded', String(on));
+    }
+  }
+
+  hideAll() {
+    for (const p of this.pins) {
+      if (p.visible) {
+        p.visible = false;
+        p.el.hidden = true;
+      }
+    }
+  }
+
+  /**
+   * Rzutowanie wszystkich punktów kamerą (macierze z bieżącej klatki – wywoływać po render()).
+   * width/height – rozmiar warstwy w px CSS, centerAnchor – oś modelu dla heurystyki
+   * „druga strona budowli”, minOffset – w jednostkach świata.
+   */
+  update(camera, width, height, centerAnchor, minOffset) {
+    if (!this.pins.length) return;
+    if (!(width > 0) || !(height > 0)) {
+      this.hideAll();
+      return;
+    }
+    _camWorld.setFromMatrixPosition(camera.matrixWorld);
+    if (centerAnchor) _centerWorld.setFromMatrixPosition(centerAnchor.matrixWorld);
+    for (const p of this.pins) {
+      if (!p.anchor) continue;
+      _pinWorld.setFromMatrixPosition(p.anchor.matrixWorld);
+      _pinView.copy(_pinWorld).applyMatrix4(camera.matrixWorldInverse);
+      const inFront = projectViewToScreen(_pinView, camera.projectionMatrix, camera.near, width, height, _screen);
+      const onScreen = inFront
+        && _screen.x >= -PIN_EDGE_MARGIN_PX && _screen.x <= width + PIN_EDGE_MARGIN_PX
+        && _screen.y >= -PIN_EDGE_MARGIN_PX && _screen.y <= height + PIN_EDGE_MARGIN_PX;
+      if (!onScreen) {
+        if (p.visible) {
+          p.visible = false;
+          p.el.hidden = true;
+        }
+        continue;
+      }
+      if (!p.visible) {
+        p.visible = true;
+        p.el.hidden = false;
+      }
+      if (!(Math.abs(_screen.x - p.x) < 0.25 && Math.abs(_screen.y - p.y) < 0.25)) {
+        p.x = _screen.x;
+        p.y = _screen.y;
+        p.el.style.transform = `translate3d(${p.x.toFixed(1)}px, ${p.y.toFixed(1)}px, 0)`;
+      }
+      const far = centerAnchor ? isFarSide(_pinWorld, _centerWorld, _camWorld, minOffset) : false;
+      if (far !== p.far) {
+        p.far = far;
+        p.el.classList.toggle('is-far', far);
+      }
+    }
+  }
+}
+
+/** Panel współrzędnych trybu debug (w nakładce AR albo pod podglądem 3D). */
+function createPickPanel(onPage) {
+  const root = document.createElement('div');
+  root.className = onPage ? 'hs-pick hs-pick--page' : 'hs-pick';
+  root.hidden = true;
+  const text = document.createElement('div');
+  text.className = 'hs-pick-text';
+  text.textContent = T('debugPickHint');
+  const copy = document.createElement('button');
+  copy.type = 'button';
+  copy.className = 'hs-pick-copy';
+  copy.textContent = T('debugCopy');
+  copy.disabled = true;
+  root.append(text, copy);
+  const panel = { root, text, copy, value: null, timer: 0 };
+  copy.addEventListener('click', () => copyPick(panel));
+  return panel;
+}
+
+/**
+ * Elementy nakładki AR związane z punktami wiedzy. Kolejność w nakładce (od spodu):
+ * linia odniesienia → pinezki → karta → istniejący górny komunikat i dolny pasek → panel debug.
+ */
+function buildHotspotHud() {
+  const layer = new PinLayer(true, toggleHotspot);
+
+  const lines = document.createElementNS(SVG_NS, 'svg');
+  lines.setAttribute('class', 'hs-lines');
+  lines.setAttribute('aria-hidden', 'true');
+  lines.style.display = 'none';
+  const mkLine = (cls) => {
+    const l = document.createElementNS(SVG_NS, 'line');
+    l.setAttribute('class', cls);
+    return l;
+  };
+  const halo = mkLine('hs-line-halo');
+  const line = mkLine('hs-line');
+  const dot = document.createElementNS(SVG_NS, 'circle');
+  dot.setAttribute('class', 'hs-line-dot');
+  dot.setAttribute('r', '4');
+  lines.append(halo, line, dot);
+
+  const card = document.createElement('section');
+  card.className = 'hs-card';
+  card.hidden = true;
+  card.setAttribute('role', 'dialog');
+  card.setAttribute('aria-modal', 'false');
+  card.setAttribute('aria-labelledby', 'hs-card-title');
+  const head = document.createElement('div');
+  head.className = 'hs-card-head';
+  const num = document.createElement('span');
+  num.className = 'hs-card-num';
+  num.setAttribute('aria-hidden', 'true');
+  const title = document.createElement('h2');
+  title.className = 'hs-card-title';
+  title.id = 'hs-card-title';
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'ar-btn hs-card-close';
+  close.textContent = '✕';
+  close.setAttribute('aria-label', T('hotspotClose'));
+  close.addEventListener('click', closeHotspot);
+  head.append(num, title, close);
+  const body = document.createElement('div');
+  body.className = 'hs-card-body';
+  card.append(head, body);
+
+  ui.overlay.prepend(lines, layer.root, card);
+  ui.overlay.classList.toggle('is-debug', debug);
+
+  const pickAr = debug ? createPickPanel(false) : null;
+  if (pickAr) ui.overlay.append(pickAr.root);
+
+  const ro = new ResizeObserver(() => {
+    measureOverlay();
+    layoutPick();
+    if (hs.activeId) layoutCard();
+  });
+  ro.observe(ui.overlay);
+
+  return {
+    layer, card, num, title, body,
+    lines, halo, line, dot, lineShown: false, lineKey: '',
+    pickAr, pickPage: null,
+    arTop: ui.overlay.querySelector('.ar-top'),
+  };
+}
+
+/** Kotwice, pinezki i narzędzia debug po wczytaniu modelu. */
+function setupHotspots(previewPivot) {
+  const m = state.model;
+  hs.ar = { ...attachHotspotAnchors(m.root, hs.list, m.center), meshes: m.meshes, root: m.root, marker: null };
+  hsHud.layer.build(hs.list, hs.ar.anchors);
+
+  if (!debug) return;
+  hs.ar.marker = makePickMarker(m.footprint);
+  m.root.add(hs.ar.marker);
+
+  // Podgląd 3D: pivot → korzeń modelu (klon) – ten sam układ współrzędnych pliku .glb.
+  const pRoot = previewPivot.children[0];
+  const pMeshes = [];
+  pRoot.traverse((obj) => { if (obj.isMesh) pMeshes.push(obj); });
+  hs.preview = { ...attachHotspotAnchors(pRoot, hs.list, m.center), meshes: pMeshes, root: pRoot, marker: makePickMarker(m.footprint) };
+  pRoot.add(hs.preview.marker);
+
+  hs.previewLayer = new PinLayer(false);
+  hs.previewLayer.build(hs.list, hs.preview.anchors);
+  ui.preview.insertBefore(hs.previewLayer.root, ui.previewHint);
+  ui.preview.classList.add('is-debug');
+
+  hsHud.pickPage = createPickPanel(true);
+  ui.debugPage.insertAdjacentElement('afterend', hsHud.pickPage.root);
+  hsHud.pickPage.root.hidden = false;
+  setupPreviewPicking();
+}
+
+function measureOverlay() {
+  hs.overlaySize.w = ui.overlay.clientWidth || window.innerWidth;
+  hs.overlaySize.h = ui.overlay.clientHeight || window.innerHeight;
+}
+
+/** Panel debug w AR stoi tuż pod górnym komunikatem (jego wysokość zależy od treści). */
+function layoutPick() {
+  const panel = hsHud.pickAr;
+  if (!panel || panel.root.hidden || ui.overlay.hidden) return;
+  const top = hsHud.arTop ? hsHud.arTop.getBoundingClientRect().bottom : 16;
+  panel.root.style.top = `${Math.round(top + 8)}px`;
+}
+
+// ───────── Karta wiedzy i linia odniesienia ─────────
+
+/** Wolny pas na kartę: pod górnym komunikatem (i panelem debug), nad dolnym paskiem. */
+function measureBand() {
+  const h = hs.overlaySize.h || window.innerHeight;
+  let top = 0;
+  if (hsHud.arTop) top = Math.max(top, hsHud.arTop.getBoundingClientRect().bottom);
+  if (hsHud.pickAr && !hsHud.pickAr.root.hidden) top = Math.max(top, hsHud.pickAr.root.getBoundingClientRect().bottom);
+  let bottom = h - 24;
+  if (ui.arToolbar && !ui.arToolbar.hidden) bottom = Math.min(bottom, ui.arToolbar.getBoundingClientRect().top);
+  // &debug=1: panel pomiarów (lewy dolny róg) też jest przeszkodą dla karty.
+  if (ui.debug && !ui.debug.hidden) bottom = Math.min(bottom, ui.debug.getBoundingClientRect().top);
+  return { top: top + CARD_MARGIN_PX, bottom: bottom - CARD_MARGIN_PX };
+}
+
+/** Ustawia kartę w pasie (u góry albo u dołu) i zapamiętuje jej prostokąt dla linii. */
+function layoutCard() {
+  const el = hsHud.card;
+  if (!hs.activeId || el.hidden) return;
+  hs.band = measureBand();
+  const room = Math.max(96, hs.band.bottom - hs.band.top);
+  el.style.maxHeight = `${Math.round(room)}px`;
+  const height = el.offsetHeight;
+  const top = hs.placement === 'top' ? hs.band.top : Math.max(hs.band.top, hs.band.bottom - height);
+  el.style.top = `${Math.round(top)}px`;
+  hs.cardRect = { left: el.offsetLeft, right: el.offsetLeft + el.offsetWidth, top: Math.round(top), bottom: Math.round(top) + height };
+}
+
+function toggleHotspot(id) {
+  if (hs.activeId === id) closeHotspot();
+  else openHotspot(id);
+}
+
+function openHotspot(id) {
+  const index = hs.list.findIndex((s) => s.id === id);
+  if (index < 0) return;
+  const spot = hs.list[index];
+  hs.activeId = id;
+  hsHud.num.textContent = String(index + 1);
+  hsHud.title.textContent = pick(spot.title);
+  hsHud.body.textContent = pick(spot.description);
+  hsHud.body.hidden = !hsHud.body.textContent;
+  hsHud.body.scrollTop = 0;
+  hsHud.card.hidden = false;
+  hsHud.layer.setActive(id);
+
+  const pin = hsHud.layer.get(id);
+  hs.band = measureBand();
+  hs.placement = chooseCardPlacement(pin && pin.visible ? pin.y : NaN, hs.band.top, hs.band.bottom, null);
+  layoutCard();
+  // Wymuszenie układu przed dodaniem klasy – płynne pojawienie się bez requestAnimationFrame
+  // (okienne rAF bywa wstrzymane w trakcie sesji immersyjnej).
+  void hsHud.card.offsetWidth;
+  hsHud.card.classList.add('is-open');
+  updateLeader();
+}
+
+function closeHotspot() {
+  if (!hs.activeId && hsHud.card.hidden) return;
+  hs.activeId = null;
+  hs.cardRect = null;
+  hsHud.card.classList.remove('is-open');
+  hsHud.card.hidden = true;
+  hsHud.layer.setActive(null);
+  hideLeader();
+}
+
+function hideLeader() {
+  if (!hsHud.lineShown) return;
+  hsHud.lineShown = false;
+  hsHud.lineKey = '';
+  hsHud.lines.style.display = 'none';
+}
+
+function showLeader(x1, y1, x2, y2) {
+  const key = `${x1.toFixed(1)},${y1.toFixed(1)},${x2.toFixed(1)},${y2.toFixed(1)}`;
+  if (key !== hsHud.lineKey) {
+    hsHud.lineKey = key;
+    for (const l of [hsHud.halo, hsHud.line]) {
+      l.setAttribute('x1', x1.toFixed(1));
+      l.setAttribute('y1', y1.toFixed(1));
+      l.setAttribute('x2', x2.toFixed(1));
+      l.setAttribute('y2', y2.toFixed(1));
+    }
+    hsHud.dot.setAttribute('cx', x1.toFixed(1));
+    hsHud.dot.setAttribute('cy', y1.toFixed(1));
+  }
+  if (!hsHud.lineShown) {
+    hsHud.lineShown = true;
+    hsHud.lines.style.display = '';
+  }
+}
+
+/** Co klatkę: linia od krawędzi karty do bieżącego położenia aktywnej pinezki. */
+function updateLeader() {
+  const pin = hs.activeId ? hsHud.layer.get(hs.activeId) : null;
+  if (!pin || !pin.visible || !hs.cardRect) {
+    hideLeader();
+    return;
+  }
+  const next = chooseCardPlacement(pin.y, hs.band.top, hs.band.bottom, hs.placement);
+  if (next !== hs.placement) {
+    hs.placement = next;
+    layoutCard();
+  }
+  const a = leaderAnchor(hs.cardRect, pin.x, pin.y);
+  if (!a) {
+    hideLeader();
+    return;
+  }
+  showLeader(a.x, a.y, pin.x, pin.y);
+}
+
+/** Pinezki w AR – po render(), więc macierze kamery XR i kotwic są z bieżącej klatki. */
+function updateArHotspots() {
+  if (!hs.ar) return;
+  if (!state.placed || !ar.anchor.visible) {
+    hsHud.layer.hideAll();
+    hideLeader();
+    return;
+  }
+  const cam = renderer.xr.getCamera();
+  const minOffset = FAR_SIDE_MIN_OFFSET * state.model.footprint * currentArScale();
+  hsHud.layer.update(cam, hs.overlaySize.w, hs.overlaySize.h, hs.ar.center, minOffset);
+  updateLeader();
+}
+
+/** Pinezki w podglądzie 3D (tylko &debug=1). Podgląd normalizuje model do szerokości 1. */
+function updatePreviewHotspots() {
+  if (!hs.previewLayer || !hs.preview) return;
+  hs.previewLayer.update(preview.camera, hs.previewSize.w, hs.previewSize.h, hs.preview.center, FAR_SIDE_MIN_OFFSET);
+}
+
+// ───────── Debug: współrzędne punktu na modelu ─────────
+
+const raycaster = new THREE.Raycaster();
+const _ndc = new THREE.Vector2();
+
+/** Pierwsze trafienie promienia w siatki modelu → punkt w układzie pliku .glb. */
+function pickModelPoint(target) {
+  const hits = raycaster.intersectObjects(target.meshes, false);
+  if (!hits.length) return null;
+  const hit = hits[0];
+  const local = target.root.worldToLocal(hit.point.clone());
+  return { local, meshName: hit.object.name || '' };
+}
+
+function showPick(panel, target, result) {
+  if (!panel) return;
+  if (!result) {
+    panel.text.textContent = T('debugPickMiss');
+    return;
+  }
+  panel.value = formatPoint(result.local);
+  panel.text.textContent = `${panel.value}\n${result.meshName || '–'}`;
+  panel.copy.disabled = false;
+  panel.copy.textContent = T('debugCopy');
+  if (target && target.marker) {
+    target.marker.position.copy(result.local);
+    target.marker.visible = true;
+  }
+  console.info(`histARy debug: punkt ${panel.value} (${result.meshName || 'bez nazwy'})`);
+}
+
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (e) { /* próba awaryjna niżej */ }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;left:0;top:0;opacity:0;user-select:text;-webkit-user-select:text;';
+    (ui.overlay.hidden ? document.body : ui.overlay).append(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove();
+    return ok;
+  } catch (e) {
+    return false;
+  }
+}
+
+async function copyPick(panel) {
+  if (!panel.value) return;
+  const ok = await copyText(panel.value);
+  if (!ok) console.info(`histARy debug: skopiuj ręcznie ${panel.value}`);
+  panel.copy.textContent = ok ? T('debugCopied') : T('debugCopyFailed');
+  clearTimeout(panel.timer);
+  panel.timer = setTimeout(() => { panel.copy.textContent = T('debugCopy'); }, 1600);
+}
+
+/** Debug w AR: stuknięcie ekranu, którego promień trafia w model. true = zdarzenie obsłużone. */
+function debugPickInAr() {
+  if (!debug || !hs.ar || !state.placed || !ar.anchor.visible || !ar.controller) return false;
+  ar.scene.updateMatrixWorld();
+  ar.controller.updateMatrixWorld(true);
+  raycaster.setFromXRController(ar.controller);
+  const result = pickModelPoint(hs.ar);
+  if (!result) return false;
+  showPick(hsHud.pickAr, hs.ar, result);
+  return true;
+}
+
+/** Debug w podglądzie 3D: krótkie stuknięcie (nie obrót) w model. */
+function setupPreviewPicking() {
+  const el = renderer.domElement;
+  let down = null;
+  el.addEventListener('pointerdown', (e) => {
+    down = { pointerId: e.pointerId, x: e.clientX, y: e.clientY, t: performance.now() };
+  });
+  el.addEventListener('pointerup', (e) => {
+    if (!down || down.pointerId !== e.pointerId) return;
+    const d = down;
+    down = null;
+    if (renderer.xr.isPresenting) return;
+    if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > PREVIEW_TAP_MAX_MOVE_PX || performance.now() - d.t > PREVIEW_TAP_MAX_MS) return;
+    const rect = el.getBoundingClientRect();
+    _ndc.set(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
+    preview.scene.updateMatrixWorld();
+    raycaster.setFromCamera(_ndc, preview.camera);
+    showPick(hsHud.pickPage, hs.preview, pickModelPoint(hs.preview));
+  });
+  el.addEventListener('pointercancel', () => { down = null; });
+}
+
 // ───────── Sesja WebXR ─────────
 
 async function startAR() {
@@ -926,7 +1636,18 @@ function onSessionStart(session) {
   ui.arToolbar.hidden = true;
   ui.arMode.textContent = state.mode === 'real' ? T('modeReal') : T('modeTabletop');
   ui.debug.hidden = !debug;
+  closeHotspot();
+  hsHud.layer.hideAll();
+  if (hs.ar && hs.ar.marker) hs.ar.marker.visible = false;
+  if (hsHud.pickAr) {
+    hsHud.pickAr.root.hidden = false;
+    hsHud.pickAr.value = null;
+    hsHud.pickAr.copy.disabled = true;
+    hsHud.pickAr.text.textContent = T('debugPickHint');
+  }
+  measureOverlay();
   updateArHint();
+  layoutPick();
 
   session.requestReferenceSpace('viewer')
     .then((space) => session.requestHitTestSource({ space }))
@@ -942,6 +1663,8 @@ function onSessionEnd() {
     ar.hitTestSource = null;
   }
   stopHoldRotate();
+  closeHotspot();
+  hsHud.layer.hideAll();
   ar.reticle.visible = false;
   ui.overlay.hidden = true;
   state.placed = false;
@@ -956,7 +1679,12 @@ function updateArHint() {
   if (!state.reticleActive) text = T('arTapWake');          // model postawiony, celownik ukryty
   else if (!ar.reticle.visible) text = T('arScan');         // celownik aktywny, brak podłoża
   else text = T('arTapPlace');                              // celownik aktywny i widoczny
-  if (ui.arHint.textContent !== text) ui.arHint.textContent = text;
+  if (ui.arHint.textContent !== text) {
+    ui.arHint.textContent = text;
+    // Wysokość górnego komunikatu mogła się zmienić – panel debug i karta pod nim.
+    layoutPick();
+    if (hs.activeId) layoutCard();
+  }
 }
 
 /**
@@ -964,12 +1692,15 @@ function updateArHint() {
  *  A) celownik aktywny i widoczny → postaw / przenieś model, schowaj celownik,
  *  B) model postawiony, celownik ukryty → pierwsze stuknięcie tylko „budzi” celownik,
  *     drugie (już przy aktywnym celowniku) przenosi model jak w przypadku A.
+ * Stuknięcia pinezek, karty i paska nie docierają tutaj (beforexrselect + blokada HUD).
+ * W trybie &debug=1 stuknięcie, którego promień trafia w model, tylko odczytuje współrzędne.
  */
 function onSelect() {
   const now = performance.now();
   if (!state.model) return;
   if (ar.gestureActive || now - ar.lastGestureEnd < GESTURE_COOLDOWN_MS) return;
   if (now - ar.lastHudTouch < HUD_TAP_COOLDOWN_MS) return;
+  if (debugPickInAr()) return;
 
   switch (selectAction(state.reticleActive, ar.reticle.visible)) {
     case 'wake':
@@ -999,7 +1730,9 @@ function scaleBy(factor) {
 
 // ───────── Przyciski HUD ─────────
 
-// Dotknięcia przycisków i paska narzędzi nie mogą stawiać ani budzić celownika.
+const hsHud = buildHotspotHud();
+
+// Dotknięcia przycisków (także pinezek), karty i paska narzędzi nie mogą stawiać ani budzić celownika.
 ui.overlay.addEventListener('beforexrselect', (e) => {
   if (e.target instanceof Element && e.target.closest(HUD_SELECTOR)) e.preventDefault();
 });
@@ -1149,10 +1882,12 @@ function renderFrame(time, frame) {
       }
     }
     renderer.render(ar.scene, ar.camera);
+    updateArHotspots();
   } else {
     ar.lastFrameTime = 0;
     preview.controls.update();
     renderer.render(preview.scene, preview.camera);
+    updatePreviewHotspots();
   }
 }
 
@@ -1166,11 +1901,12 @@ function debugText() {
     `Trójkąty (kadr): ${info.triangles}`,
     m ? `Trójkąty modelu: ${m.triangles}` : '',
     m ? `Wczytanie: ${m.loadMs} ms, ${(m.bytes / 1048576).toFixed(2)} MB` : '',
-    m ? `Rozmiar modelu: ${m.size.x.toFixed(2)} × ${m.size.y.toFixed(2)} × ${m.size.z.toFixed(2)}` : '',
+    m ? `Rozmiar modelu: ${m.size.x.toFixed(3)} × ${m.size.y.toFixed(3)} × ${m.size.z.toFixed(3)}` : '',
     `Skala AR: ${currentArScale().toFixed(4)} (${state.mode})`,
     `WebXR: ${state.xr.reason}; Android: ${isAndroid ? 'tak' : 'nie'}; WebView: ${isAndroidWebView ? 'tak' : 'nie'}; Chrome: ${isGoogleChrome ? 'tak' : 'nie'}`,
     `Celownik: ${state.reticleActive ? 'aktywny' : 'ukryty'}${ar.reticle && ar.reticle.visible ? ', widoczny' : ''}`,
     `Szacowanie światła: ${ar.estimating ? 'tak' : 'nie'}`,
+    `Punkty wiedzy: ${hs.list.length}${hs.activeId ? ` (otwarty: ${hs.activeId})` : ''}`,
   ].filter(Boolean).join('\n');
 }
 
