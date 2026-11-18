@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "mokre",
-  "revision": 1,
+  "revision": 2,
   "location": {
     "lat": 50.172806,
     "lon": 18.854556
@@ -28,5 +28,67 @@
     "poster": "models/mokre/poster.jpg",
     "realWidthMeters": 30,
     "tabletopWidthMeters": 0.6
-  }
+  },
+  "hotspots": [
+    {
+      "id": "portyk",
+      "position": [0.464, 0.167, -0.058],
+      "title": {
+        "pl": "Portyk kolumnowy z tarasem",
+        "en": "Columned portico with terrace"
+      },
+      "description": {
+        "pl": "Reprezentacyjne wejście od strony podjazdu, utrzymane w duchu klasycyzmu. Kolumny portyku dźwigały taras dostępny z pierwszego piętra. Ten akcent na osi fasady podkreślał prestiż właścicieli majątku – rodów von Hochberg i von Witowski.",
+        "en": "The formal entrance facing the driveway, in a classicising style. The portico's columns carried a terrace reached from the first floor. This accent on the facade's axis expressed the standing of the estate's owners, the von Hochberg and von Witowski families."
+      }
+    },
+    {
+      "id": "ryzalit",
+      "position": [0.341, 0.42, -0.058],
+      "title": {
+        "pl": "Ryzalit środkowy z attyką",
+        "en": "Central avant-corps with attic"
+      },
+      "description": {
+        "pl": "Lekko wysunięta środkowa część fasady, zwieńczona dekoracyjną attyką. Przełamywała monotonię długiej elewacji i wyznaczała oś wejścia. Za jej oknami na piętrze mieścił się zwykle najważniejszy salon – piano nobile.",
+        "en": "A slightly projecting central section of the facade, crowned with a decorative attic. It broke up the long elevation and marked the axis of the entrance. Behind its first-floor windows was usually the principal salon – the piano nobile."
+      }
+    },
+    {
+      "id": "bonowanie",
+      "position": [0.344, 0.25, 0.426],
+      "title": {
+        "pl": "Boniowanie narożników i gzymsy",
+        "en": "Corner rustication and cornices"
+      },
+      "description": {
+        "pl": "Narożniki budynku podkreślało tynkowe boniowanie, a kondygnacje oddzielały poziome gzymsy. Taki wystrój elewacji był typowy dla górnośląskich rezydencji drugiej połowy XIX wieku.",
+        "en": "Rusticated plasterwork accentuated the corners of the building, and horizontal cornices separated the storeys. Facade decoration of this kind was typical of Upper Silesian residences in the second half of the 19th century."
+      }
+    },
+    {
+      "id": "dach",
+      "position": [0.22, 0.419, 0.28],
+      "title": {
+        "pl": "Dach czterospadowy",
+        "en": "Hipped roof"
+      },
+      "description": {
+        "pl": "Niski dach czterospadowy z szerokim okapem chronił elewacje przed deszczem. Krył poddasze, które w rezydencjach tego typu służyło zwykle jako mieszkania służby i magazyn.",
+        "en": "The low-pitched hipped roof with wide eaves protected the facades from rain. It concealed an attic storey which, in residences of this type, usually housed servants and storage."
+      }
+    },
+    {
+      "id": "piwnice",
+      "position": [0.339, 0.022, 0.3],
+      "title": {
+        "pl": "Piwnice i fundamenty",
+        "en": "Basement and foundations"
+      },
+      "description": {
+        "pl": "Masywny cokół wyznaczał poziom piwnic, wznoszonych zwykle z kamienia i cegły. Mieściły się w nich najczęściej kuchnia, spiżarnie i składy opału. Po pałacu nie zachował się dziś żaden widoczny ślad – z całego założenia przetrwał jedynie park ze stawem.",
+        "en": "A solid plinth marked the basement level, usually built of stone and brick. Basements like these typically held the kitchen, pantries and fuel stores. No visible trace of the palace survives today – of the whole estate, only the park with its pond remains."
+      }
+    }
+  ]
 }
