@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="theme-color" content="#111111">
   <!-- Wersja strony – musi zgadzać się z VIEWER_VERSION w viewer.js i z ?v= w tagu skryptu na dole. -->
-  <meta name="histary-viewer" content="2">
+  <meta name="histary-viewer" content="3">
   <title>histARy – AR</title>
   <link rel="icon" href="data:,">
   <style>
@@ -152,12 +152,110 @@
       .ar-mode { padding: 0 10px; font-size: 13px; }
     }
     #debug {
-      position: absolute; left: 16px; bottom: 90px; font: 11px/1.4 ui-monospace, monospace;
+      position: absolute; left: 16px; bottom: 90px; font: 11px/1.4 ui-monospace, monospace; pointer-events: none;
       background: rgba(0,0,0,.6); padding: 6px 8px; border-radius: 8px; text-align: left; white-space: pre;
     }
     #debug[hidden] { display: none; }
     #debug-page { font: 11px/1.4 ui-monospace, monospace; color: #8e8e93; white-space: pre; text-align: left; margin-top: 10px; }
     #debug-page[hidden] { display: none; }
+
+    /* ───── Punkty wiedzy (elementy tworzy viewer.js) ───── */
+
+    /* Warstwa pinezek: przepuszcza dotknięcia (stuknięcie obok pinezki to zwykły „select”). */
+    .hs-layer { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+    .hs-pin {
+      position: absolute; left: 0; top: 0; width: 44px; height: 44px; margin: -22px 0 0 -22px;
+      padding: 0; border: none; border-radius: 50%; background: transparent; color: #fff;
+      display: flex; align-items: center; justify-content: center;
+      pointer-events: auto; cursor: pointer; will-change: transform;
+      user-select: none; -webkit-user-select: none;
+      -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
+      touch-action: none; transition: opacity .2s ease;
+    }
+    .hs-pin[hidden] { display: none; }
+    .hs-pin.is-active { z-index: 1; }
+    .hs-pin.is-far { opacity: .45; }
+    .hs-pin-dot {
+      position: relative; width: 26px; height: 26px; border-radius: 50%;
+      background: rgba(112,66,20,.94); border: 2px solid #f4f1ea;
+      box-shadow: 0 0 0 2px rgba(0,0,0,.45), 0 2px 8px rgba(0,0,0,.55);
+      font-size: 12px; font-weight: 700; line-height: 22px; text-align: center;
+      transition: transform .15s ease, background-color .15s ease, color .15s ease;
+    }
+    .hs-pin:active .hs-pin-dot { transform: scale(.9); }
+    .hs-pin.is-active .hs-pin-dot { background: #ffd60a; color: #1c1c1e; border-color: #fff; transform: scale(1.15); }
+    /* Delikatny puls zachęcający do stuknięcia; wyłączony dla aktywnej i przygaszonej pinezki. */
+    .hs-pin::before {
+      content: ""; position: absolute; width: 26px; height: 26px; border-radius: 50%;
+      border: 2px solid rgba(255,214,10,.6); opacity: 0; pointer-events: none;
+      animation: hs-pulse 2.8s ease-out infinite; animation-delay: var(--hs-delay, 0s);
+    }
+    .hs-pin.is-active::before, .hs-pin.is-far::before { animation: none; }
+    @keyframes hs-pulse {
+      0% { transform: scale(1); opacity: .65; }
+      65%, 100% { transform: scale(1.9); opacity: 0; }
+    }
+    .hs-pin-label {
+      position: absolute; top: 100%; left: 50%; transform: translateX(-50%); margin-top: -6px;
+      display: none; padding: 2px 6px; border-radius: 6px; background: rgba(0,0,0,.7);
+      font: 600 10px/1.3 ui-monospace, monospace; white-space: nowrap; pointer-events: none;
+    }
+    .is-debug .hs-pin-label { display: block; }
+    /* W podglądzie 3D (tylko &debug=1) pinezki są samymi znacznikami – dotyk obraca model. */
+    .preview .hs-pin { pointer-events: none; }
+
+    /* Linia odniesienia: karta → bieżące położenie pinezki. */
+    .hs-lines { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+    .hs-line-halo { stroke: rgba(0,0,0,.55); stroke-width: 5; stroke-linecap: round; fill: none; }
+    .hs-line { stroke: #ffd60a; stroke-width: 2; stroke-linecap: round; fill: none; }
+    .hs-line-dot { fill: #ffd60a; stroke: rgba(0,0,0,.55); stroke-width: 2; }
+
+    /* Karta wiedzy: pozycję w pionie (pas między komunikatem a paskiem) ustawia viewer.js. */
+    .hs-card {
+      position: absolute; left: 16px; right: 16px; max-width: 420px; margin: 0 auto;
+      display: flex; flex-direction: column; gap: 6px; overflow: hidden;
+      background: rgba(28,28,30,.92); border: 1px solid #3a3a3c; border-left: 3px solid #704214;
+      border-radius: 14px; padding: 10px 10px 14px 14px; box-shadow: 0 10px 30px rgba(0,0,0,.5);
+      color: #fff; text-align: left; opacity: 0; transition: opacity .15s ease;
+      user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+    }
+    .hs-card[hidden] { display: none; }
+    .hs-card.is-open { opacity: 1; }
+    .hs-card-head { display: flex; align-items: flex-start; gap: 10px; flex: 0 0 auto; }
+    .hs-card-num {
+      flex: 0 0 26px; width: 26px; height: 26px; margin-top: 5px; border-radius: 50%;
+      background: #ffd60a; color: #1c1c1e; font-size: 12px; font-weight: 700; line-height: 26px; text-align: center;
+    }
+    .hs-card-title { flex: 1; min-width: 0; padding-top: 7px; font-size: 16px; line-height: 1.3; color: #f4f1ea; }
+    .hs-card .hs-card-close {
+      width: 36px; height: 36px; flex: 0 0 36px; font-size: 16px; background: rgba(58,58,60,.9);
+    }
+    .hs-card-body {
+      font-size: 14px; line-height: 1.45; color: #d1d1d6; padding-right: 4px;
+      overflow-y: auto; touch-action: pan-y; overscroll-behavior: contain; min-height: 0;
+    }
+    .hs-card-body[hidden] { display: none; }
+
+    /* Panel współrzędnych trybu &debug=1 (w AR pod górnym komunikatem, na stronie pod podglądem). */
+    .hs-pick {
+      position: absolute; left: 16px; right: 16px; display: flex; align-items: center; gap: 10px;
+      background: rgba(0,0,0,.75); border: 1px dashed #ffd60a; border-radius: 10px; padding: 8px 10px;
+      font: 12px/1.4 ui-monospace, monospace; color: #fff; text-align: left;
+    }
+    .hs-pick[hidden] { display: none; }
+    .hs-pick--page { position: static; margin-top: 10px; }
+    .hs-pick-text { flex: 1; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .hs-pick-copy {
+      flex: 0 0 auto; border: none; border-radius: 8px; padding: 9px 12px; cursor: pointer;
+      background: #704214; color: #fff; font: inherit; font-weight: 700;
+      -webkit-tap-highlight-color: transparent; touch-action: manipulation;
+    }
+    .hs-pick-copy:disabled { opacity: .45; cursor: default; }
+
+    @media (prefers-reduced-motion: reduce) {
+      .hs-pin::before { animation: none; }
+      .hs-card, .hs-pin, .hs-pin-dot { transition: none; }
+    }
   </style>
 </head>
 <body>
@@ -196,6 +294,7 @@
     </div>
     <!-- Dolny pasek AR – przyciski (↺ ↻ | tryb | − +) tworzy viewer.js. -->
     <div id="ar-toolbar" class="ar-toolbar" hidden></div>
+    <!-- Pinezki punktów wiedzy, karta wiedzy, linia odniesienia i panel &debug=1 dokłada viewer.js. -->
     <div id="debug" hidden></div>
   </div>
 
@@ -211,7 +310,7 @@
       }
     }
   </script>
-  <!-- Jedyny skrypt aplikacji. ?v=2 wymusza pobranie nowej wersji zamiast kopii z pamięci podręcznej. -->
-  <script type="module" src="./viewer.js?v=2"></script>
+  <!-- Jedyny skrypt aplikacji. ?v=3 wymusza pobranie nowej wersji zamiast kopii z pamięci podręcznej. -->
+  <script type="module" src="./viewer.js?v=3"></script>
 </body>
 </html>
